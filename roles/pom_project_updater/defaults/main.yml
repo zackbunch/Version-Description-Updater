@@ -1,0 +1,4 @@
+---
+pom_ns: { m: "http://maven.apache.org/POM/4.0.0" }
+update_state: present
+enforce_snapshot_suffix: false   # set true to auto-append -SNAPSHOT

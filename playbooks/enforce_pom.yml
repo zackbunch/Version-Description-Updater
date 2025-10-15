@@ -1,0 +1,66 @@
+---
+- name: Enforce Pom
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../applications.json   # contains version map
+
+  vars:
+    pom_file: "{{ lookup('env', 'PWD') }}/fixtures/sample_proj/pom.xml"
+    pom_ns: { m: "http://maven.apache.org/POM/4.0.0" }
+    applications_json_path: "{{ playbook_dir }}/../applications.json"
+    dependencies_json_path: "{{ playbook_dir }}/../dependencies.json"
+
+  pre_tasks:
+    # -------------------------------------------------------------------
+    # Load and normalize applications.json
+    # -------------------------------------------------------------------
+    - name: Load applications.json
+      ansible.builtin.set_fact:
+        apps_raw: "{{ lookup('file', '../applications.json') | from_json }}"
+
+    - name: Validate applications.json structure
+      ansible.builtin.assert:
+        that: apps_raw is mapping
+        fail_msg: "applications.json must be an object of artifactId -> version"
+
+    - name: Normalize application map (lowercase keys, trimmed values)
+      ansible.builtin.set_fact:
+        applications: "{{ (applications | default({})) | combine({ (item.key | lower | trim): (item.value | trim) }) }}"
+      loop: "{{ apps_raw | dict2items }}"
+
+    - name: applications.json summary
+      ansible.builtin.debug:
+        msg:
+          total_entries: "{{ applications | length }}"
+          sample: "{{ (applications | dict2items)[:5] }}"
+
+    # -------------------------------------------------------------------
+    # Load and normalize dependencies.json
+    # -------------------------------------------------------------------
+    - name: Load dependencies.json
+      ansible.builtin.set_fact:
+        deps_raw: "{{ lookup('file', '../dependencies.json') | from_json }}"
+
+    - name: Validate dependencies.json structure
+      ansible.builtin.assert:
+        that: deps_raw is mapping
+        fail_msg: "dependencies.json must be an object of artifactId -> version"
+
+    - name: Normalize dependency map (lowercase keys, trimmed values)
+      ansible.builtin.set_fact:
+        deps_desired: "{{ (deps_desired | default({})) | combine({ (item.key | lower | trim): (item.value | string | trim) }) }}"
+      loop: "{{ deps_raw | dict2items }}"
+
+    - name: dependencies.json summary
+      ansible.builtin.debug:
+        msg:
+          total_entries: "{{ deps_desired | length }}"
+          sample: "{{ (deps_desired | dict2items)[:5] }}"
+
+  roles:
+    - pom_reader
+    # - pom_project_updater
+    - pom_deps_updater

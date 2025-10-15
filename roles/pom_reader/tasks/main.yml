@@ -1,0 +1,162 @@
+---
+# -------------------------------------------------------------------
+# Validate input
+# -------------------------------------------------------------------
+
+# Ensure the caller provided a valid POM path.
+# This keeps the role self-contained and prevents silent failures later.
+- name: Ensure pom_file variable is defined
+  ansible.builtin.assert:
+    that:
+      - pom_file is defined
+      - pom_file | length > 0
+    fail_msg: "pom_file must be provided (e.g., /path/to/project/pom.xml)"
+
+
+
+# -------------------------------------------------------------------
+# Read project coordinates (groupId, artifactId, version)
+# -------------------------------------------------------------------
+
+# Read the <groupId> tag using Maven’s XML namespace.
+# Will return an empty list if the tag is inherited from a parent POM.
+- name: Read <groupId> from POM
+  community.general.xml:
+    path: "{{ pom_file }}"
+    xpath: "/m:project/m:groupId"
+    content: text
+    namespaces: "{{ pom_ns }}"
+  register: _gid
+
+# Read the <artifactId> tag.
+# This is the canonical identifier for the project and will be normalized later.
+- name: Read <artifactId> from POM
+  community.general.xml:
+    path: "{{ pom_file }}"
+    xpath: "/m:project/m:artifactId"
+    content: text
+    namespaces: "{{ pom_ns }}"
+  register: _aid
+
+# Read the <version> tag.
+# May be empty if version is managed by a parent POM.
+- name: Read <version> from POM
+  community.general.xml:
+    path: "{{ pom_file }}"
+    xpath: "/m:project/m:version"
+    content: text
+    namespaces: "{{ pom_ns }}"
+  register: _ver
+
+
+# -------------------------------------------------------------------
+# Combine results into a single project fact (normalized artifactId)
+# -------------------------------------------------------------------
+
+# Aggregate the parsed coordinates into one structured fact.
+# The artifactId is lowercased to simplify downstream comparisons
+# against dependency maps or JSON configs (artifact IDs are case-insensitive).
+- name: Build normalized project metadata fact
+  ansible.builtin.set_fact:
+    pom_project:
+      groupId:    "{{ (_gid.matches | map('dict2items') | flatten | map(attribute='value') | first | default('')) | trim }}"
+      artifactId: "{{ (_aid.matches | map('dict2items') | flatten | map(attribute='value') | first | default('')) | trim | lower }}"
+      version:    "{{ (_ver.matches | map('dict2items') | flatten | map(attribute='value') | first | default('')) | trim }}"
+
+# Output a quick summary so pipeline logs show what was parsed.
+# This aids in debugging namespace or lookup issues without extra verbosity.
+- name: Debug normalized project metadata
+  ansible.builtin.debug:
+    msg:
+      groupId: "{{ pom_project.groupId }}"
+      artifactId: "{{ pom_project.artifactId }}"
+      version: "{{ pom_project.version }}"
+
+
+# -------------------------------------------------------------------
+# Dependencies — Task 1: read all <artifactId> nodes
+# -------------------------------------------------------------------
+
+- name: Read dependency artifactIds
+  community.general.xml:
+    path: "{{ pom_file }}"
+    xpath: "/m:project/m:dependencies/m:dependency/m:artifactId"
+    content: text
+    namespaces: "{{ pom_ns }}"
+  register: _dep_artifacts
+
+- name: Dependency artifactIds summary
+  ansible.builtin.debug:
+    msg:
+      count: "{{ _dep_artifacts.matches | length }}"
+      sample: "{{ (_dep_artifacts.matches | list)[:5] }}"
+
+# -------------------------------------------------------------------
+# Dependencies — Task 2: read groupIds + versions and assemble rows
+# -------------------------------------------------------------------
+
+- name: Read dependency groupIds
+  community.general.xml:
+    path: "{{ pom_file }}"
+    xpath: "/m:project/m:dependencies/m:dependency/m:groupId"
+    content: text
+    namespaces: "{{ pom_ns }}"
+  register: _dep_groups
+
+- name: Read dependency versions
+  community.general.xml:
+    path: "{{ pom_file }}"
+    xpath: "/m:project/m:dependencies/m:dependency/m:version"
+    content: text
+    namespaces: "{{ pom_ns }}"
+  register: _dep_versions
+
+# Normalize module return shape → plain string lists
+- name: Normalize dep lists to plain strings
+  ansible.builtin.set_fact:
+    _arts_list: >-
+      {{ _dep_artifacts.matches
+         | map('dict2items') | map('first') | map(attribute='value') | list }}
+    _gids_list: >-
+      {{ (_dep_groups.matches | default([]))
+         | map('dict2items') | map('first') | map(attribute='value') | list }}
+    _vers_list: >-
+      {{ (_dep_versions.matches | default([]))
+         | map('dict2items') | map('first') | map(attribute='value') | list }}
+
+# Zip by index; tolerate missing groupId/version (default '')
+- name: Build pom_deps_list [{groupId, artifactId, version}]
+  ansible.builtin.set_fact:
+    pom_deps_list: "{{ (pom_deps_list | default([])) + [ {
+      'groupId':    (_gids_list[i]  | default('') | trim),
+      'artifactId': (_arts_list[i]  | default('') | trim),
+      'version':    (_vers_list[i]  | default('') | trim)} ] }}"
+  loop: "{{ range(0, _arts_list | length) | list }}"
+  loop_control:
+    loop_var: i
+
+- name: Show first few deps
+  ansible.builtin.debug:
+    msg: "{{ (pom_deps_list | default([]))[:5] }}"
+
+# -------------------------------------------------------------------
+# Dependencies — Task 3: build lookup map {artifactId_lower: version}
+# -------------------------------------------------------------------
+
+- name: Build pom_deps_map
+  ansible.builtin.set_fact:
+    pom_deps_map: >-
+      {{
+        (pom_deps_map | default({}))
+        | combine({ (item.artifactId | lower | trim): (item.version | default('') | trim) })
+      }}
+  loop: "{{ pom_deps_list | default([]) }}"
+  loop_control:
+    label: "{{ item.groupId }}:{{ item.artifactId }}"
+
+# Optional: quick sanity
+- name: Dependency map summary
+  ansible.builtin.debug:
+    msg:
+      count: "{{ pom_deps_map | length }}"
+      sample_keys: "{{ (pom_deps_map.keys() | list)[:5] }}"

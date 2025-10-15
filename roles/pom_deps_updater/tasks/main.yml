@@ -1,0 +1,107 @@
+---
+# roles/pom_deps_updater/tasks/main.yml
+# Purpose: Enforce dependency versions from dependencies.json
+
+# -------------------------------------------------------------------
+# Load dependencies.json only if not preloaded
+# -------------------------------------------------------------------
+- block:
+    - name: Load dependencies.json
+      ansible.builtin.set_fact:
+        deps_raw: "{{ lookup('file', dependencies_json_path) | from_json }}"
+
+    - name: Validate and normalize dependencies.json
+      ansible.builtin.assert:
+        that:
+          - deps_raw is mapping
+        fail_msg: "Expected a JSON object of artifactId → version pairs, got: {{ deps_raw | type_debug }}"
+
+    - name: Normalize to deps_desired (lowercase keys, trimmed values)
+      ansible.builtin.set_fact:
+        deps_desired: >-
+          {{
+            (deps_raw | dict2items)
+            | map('combine', {'key': item.key | lower | trim, 'value': item.value | string | trim})
+            | list | items2dict
+          }}
+
+    - name: Remove entries missing versions
+      ansible.builtin.set_fact:
+        deps_desired: "{{ deps_desired | dict2items | rejectattr('value', 'equalto', '') | items2dict }}"
+
+    - name: dependencies.json summary
+      ansible.builtin.debug:
+        msg:
+          total_entries: "{{ deps_desired | length }}"
+          sample: "{{ (deps_desired | dict2items)[:5] }}"
+  when: deps_desired is not defined or deps_desired | length == 0
+
+# -------------------------------------------------------------------
+# Validate inputs
+# -------------------------------------------------------------------
+- name: Ensure POM dependency facts are available
+  ansible.builtin.assert:
+    that:
+      - pom_deps_list is defined
+      - pom_deps_list | length > 0
+    fail_msg: "pom_deps_list missing or empty. Ensure pom_reader ran before pom_deps_updater."
+
+# -------------------------------------------------------------------
+# Build dependency update plan (literal-only)
+# -------------------------------------------------------------------
+- name: Initialize deps_plan
+  ansible.builtin.set_fact:
+    deps_plan: []
+
+- name: Build deps_plan (literal-only)
+  ansible.builtin.set_fact:
+    deps_plan: "{{ deps_plan + [ {
+      'groupId':    item.groupId | default(''),
+      'artifactId': item.artifactId,
+      'current':    item.version | default(''),
+      'desired':    deps_desired[item.artifactId | lower]
+    } ] }}"
+  loop: "{{ pom_deps_list }}"
+  when:
+    - deps_desired.get(item.artifactId | lower, '') != ''
+    - not (item.version | default('') | regex_search('^\\$\\{.*\\}$'))
+    - item.version | default('') != deps_desired[item.artifactId | lower]
+  loop_control:
+    label: "{{ item.artifactId }} ({{ item.version | default('?') }})"
+
+- name: Dependency update plan summary
+  ansible.builtin.debug:
+    msg:
+      planned_changes: "{{ deps_plan | length }}"
+      sample: "{{ (deps_plan | default([]))[:5] }}"
+
+# -------------------------------------------------------------------
+# Apply dependency updates (literal-only)
+# -------------------------------------------------------------------
+- name: Apply dependency version updates
+  community.general.xml:
+    path: "{{ pom_file }}"
+    xpath: "/m:project/m:dependencies/m:dependency[m:artifactId='{{ item.artifactId }}']/m:version"
+    namespaces: "{{ pom_ns }}"
+    value: "{{ item.desired }}"
+    state: present
+  loop: "{{ deps_plan }}"
+  loop_control:
+    label: "{{ item.artifactId }} → {{ item.current }} → {{ item.desired }}"
+  register: _dep_update_result
+  changed_when: deps_plan | length > 0
+
+# -------------------------------------------------------------------
+# Verify & summarize
+# -------------------------------------------------------------------
+- name: Summarize dependency enforcement
+  ansible.builtin.debug:
+    msg: >-
+      {{
+        (deps_plan | length > 0)
+        | ternary(
+            '✅ Updated ' ~ (deps_plan | length) ~ ' dependency version(s): ' ~
+            (deps_plan | map(attribute='artifactId') | list | join(', ')),
+            '⚪ No dependency updates required.'
+          )
+      }}
