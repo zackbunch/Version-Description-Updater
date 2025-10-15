@@ -1,4 +1,5 @@
 {
     "zack-catalog": "1.0.0-SNAPSHOT",
-    "sample-app": "2.0.0-SNAPSHOT"
+    "sample-app": "2.0.0-SNAPSHOT",
+    "kms-api-examples": "0.0.1-SNAPSHOT"
 }

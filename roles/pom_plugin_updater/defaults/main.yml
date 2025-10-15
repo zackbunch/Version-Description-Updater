@@ -1,0 +1,4 @@
+---
+pom_ns: { m: "http://maven.apache.org/POM/4.0.0" }
+applications_json_path: "../dependencies.json"
+update_state: present

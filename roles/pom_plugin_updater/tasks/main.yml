@@ -1,0 +1,75 @@
+# -------------------------------------------------------------------
+# Load dependencies.json only if not preloaded
+# -------------------------------------------------------------------
+- block:
+    - name: Assert dependencies_json_path is set
+      ansible.builtin.assert:
+        that:
+          - dependencies_json_path is defined
+          - dependencies_json_path | length > 0
+        fail_msg: "Set dependencies_json_path to your dependencies.json file."
+
+    - name: Load dependencies.json
+      ansible.builtin.set_fact:
+        deps_raw: "{{ lookup('file', dependencies_json_path) | from_json }}"
+
+    - name: Validate dependencies.json shape
+      ansible.builtin.assert:
+        that: deps_raw is mapping
+        fail_msg: "Expected JSON object of artifactId → version. Got: {{ deps_raw | type_debug }}"
+
+    # normalize: lowercase keys, trim values
+    - name: Normalize to deps_desired
+      ansible.builtin.set_fact:
+        deps_desired: "{{ (deps_desired | default({})) | combine({ (pair.key | lower | trim): (pair.value | string | trim) }) }}"
+      loop: "{{ deps_raw | dict2items }}"
+      loop_control:
+        loop_var: pair
+
+    - name: Drop empty versions
+      ansible.builtin.set_fact:
+        deps_desired: "{{ deps_desired | dict2items | rejectattr('value','equalto','') | items2dict }}"
+
+    - name: dependencies.json summary
+      ansible.builtin.debug:
+        msg:
+          total_entries: "{{ deps_desired | length }}"
+          sample: "{{ (deps_desired | dict2items)[:5] }}"
+  when: deps_desired is not defined or deps_desired | length == 0
+
+
+# -------------------------------------------------------------------
+# Validate inputs
+# -------------------------------------------------------------------
+- name: Ensure pom_plugins_list facts are available
+  ansible.builtin.assert:
+    that:
+      - pom_plugins_list is defined
+    fail_msg: "pom_plugins_list missing. Run pom_reader before this role."
+
+# -------------------------------------------------------------------
+# Build plan from deps_desired vs explicit plugin versions
+# -------------------------------------------------------------------
+- name: Init plan
+  ansible.builtin.set_fact:
+    plugins_plan: []
+
+- name: Compute plugins_plan
+  ansible.builtin.set_fact:
+    plugins_plan: "{{ plugins_plan + [ {
+      'scope': 'plugin',
+      'artifactId': item.artifactId,
+      'current': (item.version | default('')),
+      'desired': deps_desired[item.artifactId | lower]
+    } ] }}"
+  loop: "{{ pom_plugins_list }}"
+  when:
+    - (item.artifactId | lower) in deps_desired
+    - (item.version | default('') | prop_name) == ''      # skip ${...}
+    - (item.version | default('')) != deps_desired[item.artifactId | lower]
+
+- name: Plugins plan summary
+  ansible.builtin.debug:
+    msg:
+      planned_changes: "{{ plugins_plan | length }}"
+      sample: "{{ plugins_plan[:8] }}"

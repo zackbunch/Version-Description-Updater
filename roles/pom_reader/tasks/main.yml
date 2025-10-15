@@ -2,9 +2,6 @@
 # -------------------------------------------------------------------
 # Validate input
 # -------------------------------------------------------------------
-
-# Ensure the caller provided a valid POM path.
-# This keeps the role self-contained and prevents silent failures later.
 - name: Ensure pom_file variable is defined
   ansible.builtin.assert:
     that:
@@ -12,14 +9,9 @@
       - pom_file | length > 0
     fail_msg: "pom_file must be provided (e.g., /path/to/project/pom.xml)"
 
-
-
 # -------------------------------------------------------------------
 # Read project coordinates (groupId, artifactId, version)
 # -------------------------------------------------------------------
-
-# Read the <groupId> tag using Maven’s XML namespace.
-# Will return an empty list if the tag is inherited from a parent POM.
 - name: Read <groupId> from POM
   community.general.xml:
     path: "{{ pom_file }}"
@@ -28,8 +20,6 @@
     namespaces: "{{ pom_ns }}"
   register: _gid
 
-# Read the <artifactId> tag.
-# This is the canonical identifier for the project and will be normalized later.
 - name: Read <artifactId> from POM
   community.general.xml:
     path: "{{ pom_file }}"
@@ -38,8 +28,6 @@
     namespaces: "{{ pom_ns }}"
   register: _aid
 
-# Read the <version> tag.
-# May be empty if version is managed by a parent POM.
 - name: Read <version> from POM
   community.general.xml:
     path: "{{ pom_file }}"
@@ -48,23 +36,14 @@
     namespaces: "{{ pom_ns }}"
   register: _ver
 
-
-# -------------------------------------------------------------------
-# Combine results into a single project fact (normalized artifactId)
-# -------------------------------------------------------------------
-
-# Aggregate the parsed coordinates into one structured fact.
-# The artifactId is lowercased to simplify downstream comparisons
-# against dependency maps or JSON configs (artifact IDs are case-insensitive).
+# Combine: use filters, not dict gymnastics
 - name: Build normalized project metadata fact
   ansible.builtin.set_fact:
     pom_project:
-      groupId:    "{{ (_gid.matches | map('dict2items') | flatten | map(attribute='value') | first | default('')) | trim }}"
-      artifactId: "{{ (_aid.matches | map('dict2items') | flatten | map(attribute='value') | first | default('')) | trim | lower }}"
-      version:    "{{ (_ver.matches | map('dict2items') | flatten | map(attribute='value') | first | default('')) | trim }}"
+      groupId:    "{{ _gid.matches | xml_first_trim }}"
+      artifactId: "{{ _aid.matches | xml_first_trim | lower }}"
+      version:    "{{ _ver.matches | xml_first_trim }}"
 
-# Output a quick summary so pipeline logs show what was parsed.
-# This aids in debugging namespace or lookup issues without extra verbosity.
 - name: Debug normalized project metadata
   ansible.builtin.debug:
     msg:
@@ -72,28 +51,16 @@
       artifactId: "{{ pom_project.artifactId }}"
       version: "{{ pom_project.version }}"
 
-
 # -------------------------------------------------------------------
-# Dependencies — Task 1: read all <artifactId> nodes
+# Dependencies — read + normalize to rows
 # -------------------------------------------------------------------
-
 - name: Read dependency artifactIds
   community.general.xml:
     path: "{{ pom_file }}"
     xpath: "/m:project/m:dependencies/m:dependency/m:artifactId"
     content: text
     namespaces: "{{ pom_ns }}"
-  register: _dep_artifacts
-
-- name: Dependency artifactIds summary
-  ansible.builtin.debug:
-    msg:
-      count: "{{ _dep_artifacts.matches | length }}"
-      sample: "{{ (_dep_artifacts.matches | list)[:5] }}"
-
-# -------------------------------------------------------------------
-# Dependencies — Task 2: read groupIds + versions and assemble rows
-# -------------------------------------------------------------------
+  register: _dep_art
 
 - name: Read dependency groupIds
   community.general.xml:
@@ -101,7 +68,7 @@
     xpath: "/m:project/m:dependencies/m:dependency/m:groupId"
     content: text
     namespaces: "{{ pom_ns }}"
-  register: _dep_groups
+  register: _dep_grp
 
 - name: Read dependency versions
   community.general.xml:
@@ -109,41 +76,41 @@
     xpath: "/m:project/m:dependencies/m:dependency/m:version"
     content: text
     namespaces: "{{ pom_ns }}"
-  register: _dep_versions
+  register: _dep_ver
 
-# Normalize module return shape → plain string lists
-- name: Normalize dep lists to plain strings
+- name: Normalize dependency matches to string lists
   ansible.builtin.set_fact:
-    _arts_list: >-
-      {{ _dep_artifacts.matches
-         | map('dict2items') | map('first') | map(attribute='value') | list }}
-    _gids_list: >-
-      {{ (_dep_groups.matches | default([]))
-         | map('dict2items') | map('first') | map(attribute='value') | list }}
-    _vers_list: >-
-      {{ (_dep_versions.matches | default([]))
-         | map('dict2items') | map('first') | map(attribute='value') | list }}
+    _dep_art_list: "{{ _dep_art.matches | xml_texts }}"
+    _dep_grp_list: "{{ _dep_grp.matches | xml_texts }}"
+    _dep_ver_list: "{{ _dep_ver.matches | xml_texts }}"
 
-# Zip by index; tolerate missing groupId/version (default '')
+- name: Assert dependency lists align
+  ansible.builtin.assert:
+    that:
+      - _dep_art_list | length == _dep_grp_list | length
+      - _dep_art_list | length == _dep_ver_list | length
+  when: _dep_art_list | length > 0
+
 - name: Build pom_deps_list [{groupId, artifactId, version}]
   ansible.builtin.set_fact:
     pom_deps_list: "{{ (pom_deps_list | default([])) + [ {
-      'groupId':    (_gids_list[i]  | default('') | trim),
-      'artifactId': (_arts_list[i]  | default('') | trim),
-      'version':    (_vers_list[i]  | default('') | trim)} ] }}"
-  loop: "{{ range(0, _arts_list | length) | list }}"
+      'groupId':    (_dep_grp_list[i] | default('') | trim),
+      'artifactId': (_dep_art_list[i] | default('') | trim),
+      'version':    (_dep_ver_list[i] | default('') | trim)
+    } ] }}"
+  loop: "{{ range(0, _dep_art_list | length) | list }}"
   loop_control:
     loop_var: i
+  when: _dep_art_list | length > 0
 
 - name: Show first few deps
   ansible.builtin.debug:
     msg: "{{ (pom_deps_list | default([]))[:5] }}"
-
+  when: ansible_verbosity | int >= 1
 
 # -------------------------------------------------------------------
 # Build Plugins — artifactId → explicit version + dep count (robust)
 # -------------------------------------------------------------------
-
 - name: Read build plugin artifactIds
   community.general.xml:
     path: "{{ pom_file }}"
@@ -152,15 +119,14 @@
   register: _pl_art
 
 - name: Normalize plugin artifactIds
-  set_fact:
+  ansible.builtin.set_fact:
     _pl_art_list: "{{ _pl_art.matches | xml_texts }}"
 
 - name: Init plugin facts
-  set_fact:
+  ansible.builtin.set_fact:
     pom_plugins_list: []
     pom_plugins_map: {}
 
-# Read explicit version per plugin (tolerate missing)
 - name: Read explicit version for each plugin
   community.general.xml:
     path: "{{ pom_file }}"
@@ -171,10 +137,9 @@
     loop_var: plugin
     label: "{{ plugin }}"
   register: _pl_ver
-  failed_when: false         # ← tolerate no match
+  failed_when: false
   changed_when: false
 
-# Count plugin dependencies per plugin (tolerate no dependencies)
 - name: Count plugin dependencies for each plugin
   community.general.xml:
     path: "{{ pom_file }}"
@@ -185,27 +150,39 @@
     loop_var: plugin
     label: "{{ plugin }}"
   register: _pl_dep_art
-  failed_when: false         # ← tolerate no match
+  failed_when: false
   changed_when: false
 
-# Accumulate rows + map using aligned indexes
+- name: Assert plugin reads returned aligned lengths
+  ansible.builtin.assert:
+    that:
+      - _pl_art_list | length == (_pl_ver.results | length)
+      - _pl_art_list | length == (_pl_dep_art.results | length)
+
 - name: Accumulate plugin rows and map
-  set_fact:
+  ansible.builtin.set_fact:
     pom_plugins_list: "{{ pom_plugins_list + [ {
       'artifactId': _pl_art_list[i],
-      'version':    (((_pl_ver.results[i].matches | default([])) | xml_texts | first | default('')) | trim),
-      'has_deps':   (((_pl_dep_art.results[i].matches | default([])) | length) > 0),
-      'dep_count':  ((_pl_dep_art.results[i].matches | default([])) | length)
+      'version':    (_pl_ver.results[i] | xml_first_from_result),
+      'has_deps':   ((_pl_dep_art.results[i] | xml_len) > 0),
+      'dep_count':  (_pl_dep_art.results[i] | xml_len)
     } ] }}"
     pom_plugins_map: "{{ pom_plugins_map | combine({
-      (_pl_art_list[i] | lower | trim): (((_pl_ver.results[i].matches | default([])) | xml_texts | first | default('')) | trim)
+      (_pl_art_list[i] | lower | trim): (_pl_ver.results[i] | xml_first_from_result)
     }) }}"
   loop: "{{ range(0, _pl_art_list | length) | list }}"
   loop_control:
     loop_var: i
 
+- name: Explicit versions (per plugin)
+  ansible.builtin.debug:
+    msg: "{{ _pl_art_list[i] }} = {{ _pl_ver.results[i] | xml_first_from_result | default('') }}"
+  loop: "{{ range(0, _pl_art_list | length) | list }}"
+  loop_control:
+    loop_var: i
+
 - name: Plugins summary
-  debug:
+  ansible.builtin.debug:
     msg:
       count: "{{ pom_plugins_list | length }}"
       sample: "{{ pom_plugins_list[:5] }}"
