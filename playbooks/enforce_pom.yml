@@ -66,3 +66,11 @@
     - pom_deps_updater
     - pom_plugin_updater
 
+  post_tasks:
+    - name: Final Summary
+      ansible.builtin.debug:
+        msg:
+          - "{{ project_update_summary | default('Project: No changes') }}"
+          - "{{ deps_update_summary | default('Dependencies: No changes') }}"
+          - "{{ plugin_update_summary | default('Plugins: No changes') }}"
+

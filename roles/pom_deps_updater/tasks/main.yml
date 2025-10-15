@@ -81,9 +81,9 @@
   register: _dep_update_result
   changed_when: deps_plan | length > 0
 
-- name: Summarize dependency enforcement
-  ansible.builtin.debug:
-    msg: >-
+- name: Set dependency enforcement summary
+  ansible.builtin.set_fact:
+    deps_update_summary: >-
       {{
         (deps_plan | length > 0)
         | ternary(

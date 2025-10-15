@@ -38,9 +38,9 @@
   ansible.builtin.set_fact:
     _final_version: "{{ (_verify_proj_ver.matches | map('dict2items') | flatten | map(attribute='value') | first | default('')) | trim }}"
 
-- name: Summarize project version enforcement result
-  ansible.builtin.debug:
-    msg: >-
+- name: Set project version enforcement summary
+  ansible.builtin.set_fact:
+    project_update_summary: >-
       {{
         ((new_version | default('')) | length == 0)
           | ternary(

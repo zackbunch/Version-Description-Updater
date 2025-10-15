@@ -138,16 +138,13 @@
   loop: "{{ plugins_plan }}"
   when: plugins_plan | length > 0
 
-- name: Plugin update summary
-  ansible.builtin.debug:
-    msg:
-      planned: "{{ plugins_plan | length }}"
-      changed: >-
-        {{
-          (_plugin_updates.results | default([]))
-          | selectattr('changed','defined')
-          | selectattr('changed')
-          | list | length
-        }}
-      results: "{{ plugins_summary | default([]) }}"
-  when: plugins_plan | length > 0 and ansible_verbosity > 0
+- name: Set plugin enforcement summary
+  ansible.builtin.set_fact:
+    plugin_update_summary: >-
+      {{
+        (plugins_plan | length > 0)
+        | ternary(
+            '✅ Updated ' ~ ((_plugin_updates.results | default([])) | selectattr('changed','defined') | selectattr('changed') | list | length) ~ ' plugin version(s).',
+            '⚪ No plugin updates required.'
+          )
+      }}
