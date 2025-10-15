@@ -3,7 +3,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>kms-api-examples</groupId>
   <artifactId>kms-api-examples</artifactId>
-  <version>2.0.0-SNAPSHOT</version>
+  <version>1.0.0-SNAPSHOT</version>
   <dependencies>
     <dependency>
       <groupId>org.apache.httpcomponents</groupId>
@@ -34,7 +34,7 @@
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
-      <version>2.4.1</version>
+      <version>3.4.1</version>
     </dependency>
   </dependencies>
 
@@ -65,7 +65,7 @@
       <!-- Example: Add jar plugin for packaging -->
       <plugin>
         <artifactId>maven-jar-plugin</artifactId>
-        <version>3.0.0</version>
+        <version>3.0.3</version>
         <configuration>
           <archive>
             <manifest>

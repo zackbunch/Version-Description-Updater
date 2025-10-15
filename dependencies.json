@@ -3,9 +3,9 @@
   "httpclient-cache": "4.3.2",
   "httpmime": "4.3.2",
   "jackson-core": "2.4.0",
-  "jackson-databind": "2.4.1",
+  "jackson-databind": "3.4.1",
   "maven-compiler-plugin": "3.5.1",
   "maven-surefire-plugin": "2.19.2",
   "surefire-junit47": "2.19.2",
-  "maven-jar-plugin": "3.0.0"
+  "maven-jar-plugin": "3.0.3"
 }
