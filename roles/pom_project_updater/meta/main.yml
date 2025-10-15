@@ -1,0 +1,2 @@
+dependencies:
+  - role: pom_reader

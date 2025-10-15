@@ -46,6 +46,7 @@
       groupId: "{{ pom_project.groupId }}"
       artifactId: "{{ pom_project.artifactId }}"
       version: "{{ pom_project.version }}"
+  when: ansible_verbosity > 0
 
 - name: Read dependency artifactIds
   community.general.xml:
@@ -170,6 +171,7 @@
   loop: "{{ range(0, _pl_art_list | length) | list }}"
   loop_control:
     loop_var: i
+  when: ansible_verbosity > 0
 
 - name: Plugins summary
   ansible.builtin.debug:

@@ -35,6 +35,7 @@
         msg:
           total_entries: "{{ deps_desired | length }}"
           sample: "{{ (deps_desired | dict2items)[:5] }}"
+      when: ansible_verbosity > 0
   when: deps_desired is not defined or deps_desired | length == 0
 
 - name: Assert plugin facts exist
@@ -55,6 +56,7 @@
       intersection_count: "{{ (_plugin_keys_lc | intersect(deps_desired.keys() | list)) | length }}"
       missing_in_catalog: "{{ (_plugin_keys_lc | difference(deps_desired.keys() | list))[:10] }}"
       sample_catalog_keys: "{{ (deps_desired.keys() | list)[:10] }}"
+  when: ansible_verbosity > 0
 
 - name: Init plugins_plan
   ansible.builtin.set_fact:
@@ -80,6 +82,7 @@
     msg:
       planned_changes: "{{ plugins_plan | length }}"
       sample: "{{ plugins_plan[:8] }}"
+  when: ansible_verbosity > 0
 
 - name: Apply plugin version updates
   community.general.xml:
@@ -147,4 +150,4 @@
           | list | length
         }}
       results: "{{ plugins_summary | default([]) }}"
-  when: plugins_plan | length > 0
+  when: plugins_plan | length > 0 and ansible_verbosity > 0

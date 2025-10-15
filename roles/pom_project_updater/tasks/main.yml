@@ -12,6 +12,7 @@
       project: "{{ pom_project.groupId }}:{{ pom_project.artifactId }}"
       current: "{{ pom_project.version | default('') }}"
       desired: "{{ new_version | default('') }}"
+  when: ansible_verbosity > 0
 
 - name: Update project version if different
   community.general.xml:
