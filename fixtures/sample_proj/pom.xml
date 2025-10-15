@@ -1,5 +1,8 @@
-<?xml version='1.0' encoding='UTF-8'?>
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="            http://maven.apache.org/POM/4.0.0            https://maven.apache.org/xsd/maven-4.0.0.xsd">
+<?xml version="1.0" encoding="UTF-8"?>
+<project
+  xmlns="http://maven.apache.org/POM/4.0.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
 
   <modelVersion>4.0.0</modelVersion>
 
@@ -9,24 +12,43 @@
   <version>2.0.0-SNAPSHOT</version>
   <packaging>jar</packaging>
 
-  <!-- Metadata -->
   <name>Sample Application</name>
   <description>Example Maven project with dependencies and plugins configured</description>
   <url>https://github.com/simulogix/sample-app</url>
 
-
-  <!-- Properties -->
+  <!-- Centralize versions -->
   <properties>
+    <!-- Java & enc -->
     <maven.compiler.source>17</maven.compiler.source>
     <maven.compiler.target>17</maven.compiler.target>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+    <!-- Libs -->
     <junit.version>5.10.2</junit.version>
     <slf4j.version>2.0.12</slf4j.version>
+    <commons.lang3.version>3.17.0</commons.lang3.version>
+    <logback.version>1.5.6</logback.version>
+    <commons.io.version>2.16.1</commons.io.version>
+
+    <!-- Plugins -->
+    <compiler.plugin.version>3.11.0</compiler.plugin.version>
+    <surefire.plugin.version>3.2.5</surefire.plugin.version>
+    <failsafe.plugin.version>3.2.5</failsafe.plugin.version>
+    <jar.plugin.version>3.3.0</jar.plugin.version>
+    <shade.plugin.version>3.5.0</shade.plugin.version>
+    <jacoco.plugin.version>0.8.12</jacoco.plugin.version>
+    <enforcer.plugin.version>3.4.1</enforcer.plugin.version>
+    <dependency.plugin.version>3.6.1</dependency.plugin.version>
+    <spotbugs.plugin.version>4.8.6.5</spotbugs.plugin.version>
+    <depcheck.plugin.version>10.0.4</depcheck.plugin.version>
+    <extra.enforcer.rules.version>1.8.0</extra.enforcer.rules.version>
+
+    <!-- Test patterns -->
+    <it.includes>**/*IT.java</it.includes>
   </properties>
 
   <!-- Dependencies -->
   <dependencies>
-
     <!-- Logging -->
     <dependency>
       <groupId>org.slf4j</groupId>
@@ -36,23 +58,23 @@
     <dependency>
       <groupId>ch.qos.logback</groupId>
       <artifactId>logback-classic</artifactId>
-      <version>1.5.6</version>
+      <version>${logback.version}</version>
       <scope>runtime</scope>
     </dependency>
 
-     <!-- IO Utilities -->
+    <!-- IO Utilities -->
     <dependency>
       <groupId>commons-io</groupId>
       <artifactId>commons-io</artifactId>
-      <version>2.19.4</version>
+      <version>${commons.io.version}</version>
     </dependency>
 
-     <dependency>
-      <groupId>common-lang3</groupId>
-      <artifactId>common-lang3</artifactId>
-      <version>3.17.2</version>
+    <!-- FIXED: correct coords for commons-lang3 -->
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-lang3</artifactId>
+      <version>${commons.lang3.version}</version>
     </dependency>
-
 
     <!-- JUnit 5 -->
     <dependency>
@@ -61,7 +83,6 @@
       <version>${junit.version}</version>
       <scope>test</scope>
     </dependency>
-
   </dependencies>
 
   <!-- Build -->
@@ -69,32 +90,182 @@
     <finalName>${project.artifactId}-${project.version}</finalName>
 
     <plugins>
+      <!-- Enforce build hygiene -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <version>${enforcer.plugin.version}</version>
+        <dependencies>
+          <!-- Extra rules: ban duplicate classes, etc. -->
+          <dependency>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>extra-enforcer-rules</artifactId>
+            <version>${extra.enforcer.rules.version}</version>
+          </dependency>
+        </dependencies>
+        <executions>
+          <execution>
+            <id>enforce</id>
+            <goals><goal>enforce</goal></goals>
+            <configuration>
+              <rules>
+                <requireMavenVersion>
+                  <version>[3.9,)</version>
+                </requireMavenVersion>
+                <requireJavaVersion>
+                  <version>[17,18)</version>
+                </requireJavaVersion>
+                <dependencyConvergence/>
+                <banDuplicateClasses/>
+                <requireUpperBoundDeps/>
+              </rules>
+              <fail>true</fail>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
 
-      <!-- Compiler Plugin -->
+      <!-- Compiler -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
-        <version>3.11.0</version>
+        <version>${compiler.plugin.version}</version>
         <configuration>
           <release>${maven.compiler.target}</release>
         </configuration>
       </plugin>
 
-      <!-- Surefire Plugin -->
+      <!-- Unit tests -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
-        <version>3.2.5</version>
+        <version>${surefire.plugin.version}</version>
         <configuration>
           <useModulePath>false</useModulePath>
         </configuration>
       </plugin>
 
-      <!-- JAR Plugin -->
+      <!-- Integration tests (failsafe runs in verify) -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <version>${failsafe.plugin.version}</version>
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+            <configuration>
+              <includes>
+                <include>${it.includes}</include>
+              </includes>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- Coverage -->
+      <plugin>
+        <groupId>org.jacoco</groupId>
+        <artifactId>jacoco-maven-plugin</artifactId>
+        <version>${jacoco.plugin.version}</version>
+        <executions>
+          <execution>
+            <id>prepare-agent</id>
+            <goals><goal>prepare-agent</goal></goals>
+          </execution>
+          <execution>
+            <id>report</id>
+            <phase>verify</phase>
+            <goals><goal>report</goal></goals>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- Fat JAR with deps (relocate if you embed libs frequently) -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>${shade.plugin.version}</version>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals><goal>shade</goal></goals>
+            <configuration>
+              <createDependencyReducedPom>true</createDependencyReducedPom>
+              <shadedArtifactAttached>true</shadedArtifactAttached>
+              <shadedClassifierName>all</shadedClassifierName>
+              <transformers>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>com.simulogix.example.Main</mainClass>
+                </transformer>
+              </transformers>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- Static analysis -->
+      <plugin>
+        <groupId>com.github.spotbugs</groupId>
+        <artifactId>spotbugs-maven-plugin</artifactId>
+        <version>${spotbugs.plugin.version}</version>
+        <executions>
+          <execution>
+            <phase>verify</phase>
+            <goals><goal>check</goal></goals>
+          </execution>
+        </executions>
+        <configuration>
+          <effort>max</effort>
+          <threshold>Low</threshold>
+          <failOnError>true</failOnError>
+        </configuration>
+      </plugin>
+
+      <!-- SCA / vulnerability scan -->
+      <plugin>
+        <groupId>org.owasp</groupId>
+        <artifactId>dependency-check-maven</artifactId>
+        <version>${depcheck.plugin.version}</version>
+        <executions>
+          <execution>
+            <phase>verify</phase>
+            <goals><goal>check</goal></goals>
+          </execution>
+        </executions>
+        <configuration>
+          <!-- CI-friendly: don’t fail the build until you tune thresholds -->
+          <failBuildOnCVSS>0</failBuildOnCVSS>
+          <format>JSON</format>
+          <skipProvidedScope>true</skipProvidedScope>
+          <skipTestScope>false</skipTestScope>
+        </configuration>
+      </plugin>
+
+      <!-- Dependency hygiene (undeclared/unused) -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-dependency-plugin</artifactId>
+        <version>${dependency.plugin.version}</version>
+        <executions>
+          <execution>
+            <id>analyze</id>
+            <phase>verify</phase>
+            <goals><goal>analyze-only</goal></goals>
+            <configuration>
+              <failOnWarning>true</failOnWarning>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- JAR Manifest (kept) -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-jar-plugin</artifactId>
-        <version>3.3.0</version>
+        <version>${jar.plugin.version}</version>
         <configuration>
           <archive>
             <manifest>
@@ -104,11 +275,10 @@
           </archive>
         </configuration>
       </plugin>
-
     </plugins>
   </build>
 
-  <!-- Repositories -->
+  <!-- Repositories (central is default; explicit ok) -->
   <repositories>
     <repository>
       <id>central</id>

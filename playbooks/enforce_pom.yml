@@ -62,6 +62,6 @@
 
   roles:
     - { role: pom_reader, tags: ['pom_reader'] }
-    - pom_project_updater
-    - pom_deps_updater
+    # - pom_project_updater
+    # - pom_deps_updater
 

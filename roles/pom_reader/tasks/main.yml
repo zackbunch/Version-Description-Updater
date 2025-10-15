@@ -139,24 +139,74 @@
   ansible.builtin.debug:
     msg: "{{ (pom_deps_list | default([]))[:5] }}"
 
+
 # -------------------------------------------------------------------
-# Dependencies — Task 3: build lookup map {artifactId_lower: version}
+# Build Plugins — artifactId → explicit version + dep count (robust)
 # -------------------------------------------------------------------
 
-- name: Build pom_deps_map
-  ansible.builtin.set_fact:
-    pom_deps_map: >-
-      {{
-        (pom_deps_map | default({}))
-        | combine({ (item.artifactId | lower | trim): (item.version | default('') | trim) })
-      }}
-  loop: "{{ pom_deps_list | default([]) }}"
+- name: Read build plugin artifactIds
+  community.general.xml:
+    path: "{{ pom_file }}"
+    xpath: "/*[local-name()='project']/*[local-name()='build']/*[local-name()='plugins']/*[local-name()='plugin']/*[local-name()='artifactId']"
+    content: text
+  register: _pl_art
+
+- name: Normalize plugin artifactIds
+  set_fact:
+    _pl_art_list: "{{ _pl_art.matches | xml_texts }}"
+
+- name: Init plugin facts
+  set_fact:
+    pom_plugins_list: []
+    pom_plugins_map: {}
+
+# Read explicit version per plugin (tolerate missing)
+- name: Read explicit version for each plugin
+  community.general.xml:
+    path: "{{ pom_file }}"
+    xpath: "/*[local-name()='project']/*[local-name()='build']/*[local-name()='plugins']/*[local-name()='plugin'][*[local-name()='artifactId']='{{ plugin }}']/*[local-name()='version']"
+    content: text
+  loop: "{{ _pl_art_list }}"
   loop_control:
-    label: "{{ item.groupId }}:{{ item.artifactId }}"
+    loop_var: plugin
+    label: "{{ plugin }}"
+  register: _pl_ver
+  failed_when: false         # ← tolerate no match
+  changed_when: false
 
-# Optional: quick sanity
-- name: Dependency map summary
-  ansible.builtin.debug:
+# Count plugin dependencies per plugin (tolerate no dependencies)
+- name: Count plugin dependencies for each plugin
+  community.general.xml:
+    path: "{{ pom_file }}"
+    xpath: "/*[local-name()='project']/*[local-name()='build']/*[local-name()='plugins']/*[local-name()='plugin'][*[local-name()='artifactId']='{{ plugin }}']/*[local-name()='dependencies']/*[local-name()='dependency']/*[local-name()='artifactId']"
+    content: text
+  loop: "{{ _pl_art_list }}"
+  loop_control:
+    loop_var: plugin
+    label: "{{ plugin }}"
+  register: _pl_dep_art
+  failed_when: false         # ← tolerate no match
+  changed_when: false
+
+# Accumulate rows + map using aligned indexes
+- name: Accumulate plugin rows and map
+  set_fact:
+    pom_plugins_list: "{{ pom_plugins_list + [ {
+      'artifactId': _pl_art_list[i],
+      'version':    (((_pl_ver.results[i].matches | default([])) | xml_texts | first | default('')) | trim),
+      'has_deps':   (((_pl_dep_art.results[i].matches | default([])) | length) > 0),
+      'dep_count':  ((_pl_dep_art.results[i].matches | default([])) | length)
+    } ] }}"
+    pom_plugins_map: "{{ pom_plugins_map | combine({
+      (_pl_art_list[i] | lower | trim): (((_pl_ver.results[i].matches | default([])) | xml_texts | first | default('')) | trim)
+    }) }}"
+  loop: "{{ range(0, _pl_art_list | length) | list }}"
+  loop_control:
+    loop_var: i
+
+- name: Plugins summary
+  debug:
     msg:
-      count: "{{ pom_deps_map | length }}"
-      sample_keys: "{{ (pom_deps_map.keys() | list)[:5] }}"
+      count: "{{ pom_plugins_list | length }}"
+      sample: "{{ pom_plugins_list[:5] }}"
+  when: ansible_verbosity | int >= 1
