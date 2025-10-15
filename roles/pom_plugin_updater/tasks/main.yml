@@ -38,18 +38,46 @@
   when: deps_desired is not defined or deps_desired | length == 0
 
 
-# -------------------------------------------------------------------
-# Validate inputs
-# -------------------------------------------------------------------
-- name: Ensure pom_plugins_list facts are available
+# Make sure pom_reader ran
+- name: Assert plugin facts exist
   ansible.builtin.assert:
     that:
       - pom_plugins_list is defined
     fail_msg: "pom_plugins_list missing. Run pom_reader before this role."
 
-# -------------------------------------------------------------------
-# Build plan from deps_desired vs explicit plugin versions
-# -------------------------------------------------------------------
+# --- Sanity: do we even have matching keys? ---
+- name: Compute normalized plugin keys
+  ansible.builtin.set_fact:
+    _plugin_keys_lc: >-
+      {{ pom_plugins_list | map(attribute='artifactId') | map('lower') | map('trim') | list }}
+
+- name: Show catalog vs plugins intersection
+  ansible.builtin.debug:
+    msg:
+      deps_desired_count: "{{ deps_desired | length }}"
+      plugin_count: "{{ _plugin_keys_lc | length }}"
+      intersection_count: "{{ (_plugin_keys_lc | intersect(deps_desired.keys() | list)) | length }}"
+      missing_in_catalog: "{{ (_plugin_keys_lc | difference(deps_desired.keys() | list))[:10] }}"
+      sample_catalog_keys: "{{ (deps_desired.keys() | list)[:10] }}"
+  when: ansible_verbosity | int >= 1
+
+# --- Per-plugin audit: why not planned? (explicit only) ---
+- name: Plugin diff audit (explicit only)
+  ansible.builtin.debug:
+    msg:
+      plugin: "{{ name }}"
+      current_explicit: "{{ current }}"
+      desired: "{{ desired }}"
+      is_property: "{{ (current | prop_name) != '' }}"
+      will_plan: "{{ (name in deps_desired) and ((current | prop_name) == '') and (current != desired) }}"
+  vars:
+    name: "{{ item.artifactId | lower | trim }}"
+    current: "{{ item.version | default('') | trim }}"
+    desired: "{{ deps_desired.get(name, '') }}"
+  loop: "{{ pom_plugins_list }}"
+  when: ansible_verbosity | int >= 1
+
+# --- Now build the plan ---
 - name: Init plan
   ansible.builtin.set_fact:
     plugins_plan: []
@@ -59,13 +87,13 @@
     plugins_plan: "{{ plugins_plan + [ {
       'scope': 'plugin',
       'artifactId': item.artifactId,
-      'current': (item.version | default('')),
-      'desired': deps_desired[item.artifactId | lower]
+      'current':    (item.version | default('')),
+      'desired':    deps_desired[item.artifactId | lower]
     } ] }}"
   loop: "{{ pom_plugins_list }}"
   when:
     - (item.artifactId | lower) in deps_desired
-    - (item.version | default('') | prop_name) == ''      # skip ${...}
+    - (item.version | default('') | prop_name) == ''     # skip ${...}
     - (item.version | default('')) != deps_desired[item.artifactId | lower]
 
 - name: Plugins plan summary
