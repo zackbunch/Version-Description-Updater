@@ -1,7 +1,7 @@
-
-# -------------------------------------------------------------------
-# Compute desired version and plan
-# -------------------------------------------------------------------
+---
+#
+# Purpose: Enforce project version from applications.json
+#
 - name: Compute desired project version (define even if missing)
   ansible.builtin.set_fact:
     new_version: "{{ (applications | default({})).get(pom_project.artifactId | default(''), '') }}"
@@ -13,9 +13,6 @@
       current: "{{ pom_project.version | default('') }}"
       desired: "{{ new_version | default('') }}"
 
-# -------------------------------------------------------------------
-# Update <project>/<version> if different (create node if missing)
-# -------------------------------------------------------------------
 - name: Update project version if different
   community.general.xml:
     path: "{{ pom_file }}"
@@ -28,9 +25,6 @@
     - (new_version | default('')) | length > 0
     - (pom_project.version | default('')) != (new_version | default(''))
 
-# -------------------------------------------------------------------
-# Verification & summary
-# -------------------------------------------------------------------
 - name: Re-read project version
   community.general.xml:
     path: "{{ pom_file }}"

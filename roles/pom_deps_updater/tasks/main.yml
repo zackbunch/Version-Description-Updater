@@ -1,10 +1,7 @@
 ---
-# roles/pom_deps_updater/tasks/main.yml
+#
 # Purpose: Enforce dependency versions from dependencies.json
-
-# -------------------------------------------------------------------
-# Load dependencies.json only if not preloaded
-# -------------------------------------------------------------------
+#
 - block:
     - name: Load dependencies.json
       ansible.builtin.set_fact:
@@ -36,9 +33,6 @@
           sample: "{{ (deps_desired | dict2items)[:5] }}"
   when: deps_desired is not defined or deps_desired | length == 0
 
-# -------------------------------------------------------------------
-# Validate inputs
-# -------------------------------------------------------------------
 - name: Ensure POM dependency facts are available
   ansible.builtin.assert:
     that:
@@ -46,9 +40,6 @@
       - pom_deps_list | length > 0
     fail_msg: "pom_deps_list missing or empty. Ensure pom_reader ran before pom_deps_updater."
 
-# -------------------------------------------------------------------
-# Build dependency update plan (literal-only)
-# -------------------------------------------------------------------
 - name: Initialize deps_plan
   ansible.builtin.set_fact:
     deps_plan: []
@@ -64,7 +55,7 @@
   loop: "{{ pom_deps_list }}"
   when:
     - deps_desired.get(item.artifactId | lower, '') != ''
-    - not (item.version | default('') | regex_search('^\\$\\{.*\\}$'))
+    - not (item.version | default('') | regex_search('^\$\{.*\}$'))
     - item.version | default('') != deps_desired[item.artifactId | lower]
   loop_control:
     label: "{{ item.artifactId }} ({{ item.version | default('?') }})"
@@ -75,9 +66,6 @@
       planned_changes: "{{ deps_plan | length }}"
       sample: "{{ (deps_plan | default([]))[:5] }}"
 
-# -------------------------------------------------------------------
-# Apply dependency updates (literal-only)
-# -------------------------------------------------------------------
 - name: Apply dependency version updates
   community.general.xml:
     path: "{{ pom_file }}"
@@ -91,9 +79,6 @@
   register: _dep_update_result
   changed_when: deps_plan | length > 0
 
-# -------------------------------------------------------------------
-# Verify & summarize
-# -------------------------------------------------------------------
 - name: Summarize dependency enforcement
   ansible.builtin.debug:
     msg: >-

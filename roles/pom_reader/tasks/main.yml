@@ -1,7 +1,7 @@
 ---
-# -------------------------------------------------------------------
-# Validate input
-# -------------------------------------------------------------------
+#
+# Purpose: Read and normalize project, dependency, and plugin metadata from a pom.xml file.
+#
 - name: Ensure pom_file variable is defined
   ansible.builtin.assert:
     that:
@@ -9,9 +9,6 @@
       - pom_file | length > 0
     fail_msg: "pom_file must be provided (e.g., /path/to/project/pom.xml)"
 
-# -------------------------------------------------------------------
-# Read project coordinates (groupId, artifactId, version)
-# -------------------------------------------------------------------
 - name: Read <groupId> from POM
   community.general.xml:
     path: "{{ pom_file }}"
@@ -36,7 +33,6 @@
     namespaces: "{{ pom_ns }}"
   register: _ver
 
-# Combine: use filters, not dict gymnastics
 - name: Build normalized project metadata fact
   ansible.builtin.set_fact:
     pom_project:
@@ -51,9 +47,6 @@
       artifactId: "{{ pom_project.artifactId }}"
       version: "{{ pom_project.version }}"
 
-# -------------------------------------------------------------------
-# Dependencies — read + normalize to rows
-# -------------------------------------------------------------------
 - name: Read dependency artifactIds
   community.general.xml:
     path: "{{ pom_file }}"
@@ -108,9 +101,6 @@
     msg: "{{ (pom_deps_list | default([]))[:5] }}"
   when: ansible_verbosity | int >= 1
 
-# -------------------------------------------------------------------
-# Build Plugins — artifactId → explicit version + dep count (robust)
-# -------------------------------------------------------------------
 - name: Read build plugin artifactIds
   community.general.xml:
     path: "{{ pom_file }}"
