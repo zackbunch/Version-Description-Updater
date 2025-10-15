@@ -52,7 +52,7 @@
       <!-- Example: Add surefire plugin for testing -->
       <plugin>
         <artifactId>maven-surefire-plugin</artifactId>
-        <version>2.19.1</version>
+        <version>2.19.2</version>
         <dependencies>
           <dependency>
             <groupId>org.apache.maven.surefire</groupId>
@@ -65,7 +65,7 @@
       <!-- Example: Add jar plugin for packaging -->
       <plugin>
         <artifactId>maven-jar-plugin</artifactId>
-        <version>3.0.2</version>
+        <version>3.0.4</version>
         <configuration>
           <archive>
             <manifest>
