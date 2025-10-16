@@ -1,150 +1,305 @@
----
-#
-# Purpose: Enforce plugin versions from dependencies.json
-#
-- block:
-    - name: Assert dependencies_json_path is set
-      ansible.builtin.assert:
-        that:
-          - dependencies_json_path is defined
-          - dependencies_json_path | length > 0
-        fail_msg: "Set dependencies_json_path to your dependencies.json file."
-
-    - name: Load dependencies.json
-      ansible.builtin.set_fact:
-        deps_raw: "{{ lookup('file', dependencies_json_path) | from_json }}"
-
-    - name: Validate dependencies.json shape
-      ansible.builtin.assert:
-        that: deps_raw is mapping
-        fail_msg: "Expected JSON object of artifactId → version. Got: {{ deps_raw | type_debug }}"
-
-    - name: Normalize to deps_desired
-      ansible.builtin.set_fact:
-        deps_desired: "{{ (deps_desired | default({})) | combine({ (pair.key | lower | trim): (pair.value | string | trim) }) }}"
-      loop: "{{ deps_raw | dict2items }}"
-      loop_control:
-        loop_var: pair
-
-    - name: Drop empty versions
-      ansible.builtin.set_fact:
-        deps_desired: "{{ deps_desired | dict2items | rejectattr('value','equalto','') | items2dict }}"
-
-    - name: dependencies.json summary
-      ansible.builtin.debug:
-        msg:
-          total_entries: "{{ deps_desired | length }}"
-          sample: "{{ (deps_desired | dict2items)[:5] }}"
-      when: ansible_verbosity > 0
-  when: deps_desired is not defined or deps_desired | length == 0
-
-- name: Assert plugin facts exist
-  ansible.builtin.assert:
-    that:
-      - pom_plugins_list is defined
-    fail_msg: "pom_plugins_list missing. Run pom_reader before this role."
-
-- name: Compute normalized plugin keys
+# ---------- Extract current state ----------
+- name: Extract plugins
   ansible.builtin.set_fact:
-    _plugin_keys_lc: "{{ pom_plugins_list | map(attribute='artifactId') | map('lower') | map('trim') | list }}"
+    plugins: "{{ pom_raw.content | b64decode | maven_plugins }}"
 
-- name: Show catalog vs plugins intersection
+- name: Extract plugin dependencies
+  ansible.builtin.set_fact:
+    plugin_deps: "{{ pom_raw.content | b64decode | maven_plugin_deps }}"
+
+- name: Snapshot (debug)
   ansible.builtin.debug:
     msg:
-      deps_desired_count: "{{ deps_desired | length }}"
-      plugin_count: "{{ _plugin_keys_lc | length }}"
-      intersection_count: "{{ (_plugin_keys_lc | intersect(deps_desired.keys() | list)) | length }}"
-      missing_in_catalog: "{{ (_plugin_keys_lc | difference(deps_desired.keys() | list))[:10] }}"
-      sample_catalog_keys: "{{ (deps_desired.keys() | list)[:10] }}"
-  when: ansible_verbosity > 0
+      plugins: "{{ plugins }}"
+      deps: "{{ plugin_deps }}"
 
-- name: Init plugins_plan
+# ---------- Plugin plan ----------
+- name: Build current plugin map {artifactId -> version}
   ansible.builtin.set_fact:
-    plugins_plan: []
-
-- name: Compute plugins_plan from pom_plugins_list vs deps_desired
-  ansible.builtin.set_fact:
-    plugins_plan: "{{ plugins_plan + [ {
-      'artifactId': item.artifactId,
-      'current':    (item.version | default('') | trim),
-      'desired':    deps_desired[item.artifactId | lower | trim]
-    } ] }}"
-  loop: "{{ pom_plugins_list }}"
-  when:
-    - (item.artifactId | lower | trim) in deps_desired
-    - (item.version | default('') | length) > 0
-    - (item.version | default('') | prop_name) == ''
-    - (item.version | default('') | trim)
-      != deps_desired[item.artifactId | lower | trim]
-
-- name: Plugins plan summary
-  ansible.builtin.debug:
-    msg:
-      planned_changes: "{{ plugins_plan | length }}"
-      sample: "{{ plugins_plan[:8] }}"
-  when: ansible_verbosity > 0
-
-- name: Apply plugin version updates
-  community.general.xml:
-    path: "{{ pom_file }}"
-    xpath: >-
-      /*[local-name()='project']
-      /*[local-name()='build']
-      /*[local-name()='plugins']
-      /*[local-name()='plugin'][*[local-name()='artifactId']='{{ item.artifactId }}']
-      /*[local-name()='version']
-    value: "{{ item.desired }}"
-    state: present
-  loop: "{{ plugins_plan }}"
-  loop_control:
-    label: "{{ item.artifactId }}: {{ item.current }} → {{ item.desired }}"
-  register: _plugin_updates
-  when: plugins_plan | length > 0
-
-- name: Re-read explicit version for updated plugins
-  community.general.xml:
-    path: "{{ pom_file }}"
-    xpath: >-
-      /*[local-name()='project']
-      /*[local-name()='build']
-      /*[local-name()='plugins']
-      /*[local-name()='plugin'][*[local-name()='artifactId']='{{ item.artifactId }}']
-      /*[local-name()='version']
-    content: text
-  loop: "{{ plugins_plan }}"
-  loop_control:
-    label: "{{ item.artifactId }}"
-  register: _verify_pl_ver
-  when: plugins_plan | length > 0
-
-- name: Build verification map {artifactId -> final_version}
-  ansible.builtin.set_fact:
-    _verify_map: "{{ (_verify_map | default({})) | combine({
-      (plugins_plan[i].artifactId | lower | trim): (_verify_pl_ver.results[i] | xml_first_from_result | default('') | trim)
-    }) }}"
-  loop: "{{ range(0, (plugins_plan | length)) | list }}"
-  loop_control:
-    loop_var: i
-  when: plugins_plan | length > 0
-
-- name: Build plugin results list
-  ansible.builtin.set_fact:
-    plugins_summary: "{{ (plugins_summary | default([])) + [ {
-      'artifactId': item.artifactId,
-      'current': item.current,
-      'desired': item.desired,
-      'final': _verify_map.get(item.artifactId | lower | trim, '')
-    } ] }}"
-  loop: "{{ plugins_plan }}"
-  when: plugins_plan | length > 0
-
-- name: Set plugin enforcement summary
-  ansible.builtin.set_fact:
-    plugin_update_summary: >-
+    plugins_map: >-
       {{
-        (plugins_plan | length > 0)
-        | ternary(
-            '✅ Updated ' ~ ((_plugin_updates.results | default([])) | selectattr('changed','defined') | selectattr('changed') | list | length) ~ ' plugin version(s).',
-            '⚪ No plugin updates required.'
-          )
+        dict(
+          (plugins | map(attribute='artifactId') | list)
+          | zip(plugins | map(attribute='version') | list)
+        )
       }}
+
+- name: Compute plugin update plan
+  vars:
+    desired: "{{ deps_desired.get(item|lower) | default('') }}"
+    current: "{{ plugins_map.get(item) | default('') }}"
+  ansible.builtin.set_fact:
+    plugin_update_plan: >-
+      {{
+        (plugin_update_plan | default([]))
+        + ([{
+              'artifactId': item,
+              'current': current,
+              'desired': desired
+            }] if (desired|length>0 and current|length>0 and desired != current) else [])
+      }}
+  loop: "{{ plugins | map(attribute='artifactId') | list }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Show plugin update plan (dry-run)
+  ansible.builtin.debug:
+    msg:
+      count: "{{ plugin_update_plan | length }}"
+      plan: "{{ plugin_update_plan }}"
+
+- name: Inspect desired vs current per plugin (debug-only)
+  ansible.builtin.debug:
+    msg:
+      plugin: "{{ item }}"
+      current: "{{ plugins_map.get(item) | default('') }}"
+      desired: "{{ deps_desired.get(item|lower) | default('') }}"
+  loop: "{{ plugins | map(attribute='artifactId') | list }}"
+  loop_control:
+    label: "{{ item }}"
+
+# ---------- Optional apply step (plugins) ----------
+# Enable with: -e apply_changes=true
+- name: Apply plugin version updates (opt-in)
+  when: (apply_changes | default(false) | bool) and (plugin_update_plan | length) > 0
+  block:
+    - name: Ensure plugin <version> node exists
+      community.general.xml:
+        path: "{{ pom_file }}"
+        xpath: >-
+          /*[local-name()='project']
+          /*[local-name()='build']
+          /*[local-name()='plugins']
+          /*[local-name()='plugin'][*[local-name()='artifactId']='{{ item.artifactId }}']
+          /*[local-name()='version']
+        state: present
+      loop: "{{ plugin_update_plan }}"
+      loop_control:
+        label: "{{ item.artifactId }} ensure version node"
+
+    - name: Set plugin version
+      community.general.xml:
+        path: "{{ pom_file }}"
+        xpath: >-
+          /*[local-name()='project']
+          /*[local-name()='build']
+          /*[local-name()='plugins']
+          /*[local-name()='plugin'][*[local-name()='artifactId']='{{ item.artifactId }}']
+          /*[local-name()='version']
+        value: "{{ item.desired }}"
+        state: present
+        pretty_print: true
+      loop: "{{ plugin_update_plan }}"
+      loop_control:
+        label: "{{ item.artifactId }} {{ item.current }} → {{ item.desired }}"
+
+# ---------- Plugin-dep plan ----------
+- name: Build plugin-dep pairs
+  ansible.builtin.set_fact:
+    _dep_pairs: >-
+      {{
+        (plugin_deps | map(attribute='plugin') | list)
+        | zip(plugin_deps | map(attribute='artifactId') | list)
+        | list
+      }}
+
+- name: Build plugin-dep keys
+  ansible.builtin.set_fact:
+    _dep_keys: "{{ _dep_pairs | map('join','::') | list }}"
+
+- name: Build plugin-dep versions list
+  ansible.builtin.set_fact:
+    _dep_versions: "{{ plugin_deps | map(attribute='version') | list }}"
+
+- name: Build current plugin-dep map {plugin::dep -> version}
+  ansible.builtin.set_fact:
+    plugin_deps_map: "{{ dict(_dep_keys | zip(_dep_versions)) }}"
+
+- name: Inspect desired vs current per plugin-dep (debug-only)
+  vars:
+    key: "{{ (item.plugin ~ '::' ~ item.artifactId) | lower }}"
+  ansible.builtin.debug:
+    msg:
+      pair: "{{ item.plugin }}::{{ item.artifactId }}"
+      current: "{{ plugin_deps_map.get(item.plugin ~ '::' ~ item.artifactId) | default('') }}"
+      desired: "{{ deps_desired.get(key) | default('') }}"
+  loop: "{{ plugin_deps }}"
+  loop_control:
+    label: "{{ item.plugin }}::{{ item.artifactId }}"
+
+- name: Compute plugin-dep update plan
+  vars:
+    key: "{{ (item.plugin ~ '::' ~ item.artifactId) | lower }}"
+    pair: "{{ item.plugin ~ '::' ~ item.artifactId }}"
+    current: "{{ plugin_deps_map.get(pair) | default('') }}"
+    desired: "{{ deps_desired.get(key) | default('') }}"
+  ansible.builtin.set_fact:
+    plugin_dep_update_plan: >-
+      {{
+        (plugin_dep_update_plan | default([]))
+        + ([{
+              'plugin': item.plugin,
+              'artifactId': item.artifactId,
+              'pair': pair,
+              'current': current,
+              'desired': desired
+            }] if (desired|length>0 and current|length>0 and desired != current) else [])
+      }}
+  loop: "{{ plugin_deps }}"
+  loop_control:
+    label: "{{ item.plugin }}::{{ item.artifactId }}"
+
+- name: Show plugin-dep update plan (dry-run)
+  ansible.builtin.debug:
+    msg:
+      count: "{{ plugin_dep_update_plan | length }}"
+      plan: "{{ plugin_dep_update_plan }}"
+
+# ---------- Safety: assert requested dep overrides exist in POM ----------
+- name: Assert requested dep overrides exist in POM
+  vars:
+    requested_dep_keys: "{{ (deps_desired | dict2items) | map(attribute='key') | select('search', '::') | list }}"
+    present_dep_keys: "{{ plugin_deps_map.keys() | map('lower') | list }}"
+    missing: "{{ requested_dep_keys | difference(present_dep_keys) }}"
+  ansible.builtin.assert:
+    that: missing | length == 0
+    fail_msg: "Requested plugin-dep overrides not found in POM: {{ missing }}"
+
+# ---------- Optional apply step (deps) ----------
+# Enable with: -e apply_changes=true
+- name: Apply plugin dependency version updates (opt-in)
+  when: (apply_changes | default(false) | bool) and (plugin_dep_update_plan | length) > 0
+  block:
+    - name: Ensure dep <version> node exists
+      community.general.xml:
+        path: "{{ pom_file }}"
+        xpath: >-
+          /*[local-name()='project']
+          /*[local-name()='build']
+          /*[local-name()='plugins']
+          /*[local-name()='plugin'][*[local-name()='artifactId']='{{ item.plugin }}']
+          /*[local-name()='dependencies']
+          /*[local-name()='dependency'][*[local-name()='artifactId']='{{ item.artifactId }}']
+          /*[local-name()='version']
+        state: present
+      loop: "{{ plugin_dep_update_plan }}"
+      loop_control:
+        label: "{{ item.pair }} ensure version node"
+
+    - name: Set dep version
+      community.general.xml:
+        path: "{{ pom_file }}"
+        xpath: >-
+          /*[local-name()='project']
+          /*[local-name()='build']
+          /*[local-name()='plugins']
+          /*[local-name()='plugin'][*[local-name()='artifactId']='{{ item.plugin }}']
+          /*[local-name()='dependencies']
+          /*[local-name()='dependency'][*[local-name()='artifactId']='{{ item.artifactId }}']
+          /*[local-name()='version']
+        value: "{{ item.desired }}"
+        state: present
+        pretty_print: true
+      loop: "{{ plugin_dep_update_plan }}"
+      loop_control:
+        label: "{{ item.pair }} {{ item.current }} → {{ item.desired }}"
+
+# ---------- (Optional) Re-slurp and show post-apply snapshot ----------
+- name: Re-slurp POM after apply (optional)
+  when: apply_changes | default(false) | bool
+  ansible.builtin.slurp:
+    src: "{{ pom_file }}"
+  register: pom_raw_after
+
+- name: Re-extract plugins & deps (optional)
+  when: apply_changes | default(false) | bool
+  ansible.builtin.set_fact:
+    plugins_after: "{{ pom_raw_after.content | b64decode | maven_plugins }}"
+    plugin_deps_after: "{{ pom_raw_after.content | b64decode | maven_plugin_deps }}"
+
+- name: Show post-apply snapshot (optional)
+  when: apply_changes | default(false) | bool
+  ansible.builtin.debug:
+    msg:
+      plugins_after: "{{ plugins_after }}"
+      deps_after: "{{ plugin_deps_after }}"
+
+
+
+- name: Init summary lines
+  ansible.builtin.set_fact:
+    plugin_update_summary_lines: []
+    plugin_dep_update_summary_lines: []
+
+- name: Build plugin update summary lines
+  vars:
+    desired: "{{ deps_desired.get(item | lower) | default('') }}"
+    current: "{{ plugins_map.get(item) | default('') }}"
+  ansible.builtin.set_fact:
+    plugin_update_summary_lines: >-
+      {{
+        plugin_update_summary_lines + [
+          (desired | length == 0)
+            | ternary(
+                "⚫ No desired version found for " ~ item,
+                (current != desired)
+                  | ternary(
+                      (apply_changes | default(false) | bool)
+                        | ternary("✅ Updated " ~ item ~ " from " ~ current ~ " → " ~ desired,
+                                  "🟡 Would update " ~ item ~ " from " ~ current ~ " → " ~ desired),
+                      "⚪ " ~ item ~ " already up to date (" ~ current ~ ")"
+                  )
+            )
+        ]
+      }}
+  loop: "{{ plugins | map(attribute='artifactId') | list }}"
+  loop_control: { label: "{{ item }}" }
+
+- name: Build plugin-dep update summary lines
+  vars:
+    pair: "{{ item.plugin ~ '::' ~ item.artifactId }}"
+    key: "{{ pair | lower }}"
+    desired: "{{ deps_desired.get(key) | default('') }}"
+    current: "{{ plugin_deps_map.get(pair) | default('') }}"
+  ansible.builtin.set_fact:
+    plugin_dep_update_summary_lines: >-
+      {{
+        plugin_dep_update_summary_lines + [
+          (desired | length == 0)
+            | ternary(
+                "⚫ No desired version found for " ~ pair,
+                (current != desired)
+                  | ternary(
+                      (apply_changes | default(false) | bool)
+                        | ternary("✅ Updated " ~ pair ~ " from " ~ current ~ " → " ~ desired,
+                                  "🟡 Would update " ~ pair ~ " from " ~ current ~ " → " ~ desired),
+                      "⚪ " ~ pair ~ " already up to date (" ~ current ~ ")"
+                  )
+            )
+        ]
+      }}
+  loop: "{{ plugin_deps }}"
+  loop_control: { label: "{{ item.plugin }}::{{ item.artifactId }}" }
+
+  # Normalize any accidental "\n" sequences to real newlines
+- name: Normalize plugin summary lines
+  ansible.builtin.set_fact:
+    plugin_update_summary_lines: >-
+      {{ plugin_update_summary_lines | map('regex_replace', '\\\\n', '\n') | list }}
+
+- name: Normalize plugin-dep summary lines
+  ansible.builtin.set_fact:
+    plugin_dep_update_summary_lines: >-
+      {{ plugin_dep_update_summary_lines | map('regex_replace', '\\\\n', '\n') | list }}
+
+# Build the final blob as a literal block so newlines aren't escaped
+- name: Show plugin enforcement summary
+  ansible.builtin.debug:
+    msg: |
+      === Plugin Versions ===
+      {{ (plugin_update_summary_lines | length > 0)
+          | ternary(plugin_update_summary_lines | join('\n'), '⚪ (none)') }}
+
+      === Plugin Dependency Versions ===
+      {{ (plugin_dep_update_summary_lines | length > 0)
+          | ternary(plugin_dep_update_summary_lines | join('\n'), '⚪ (none)') }}

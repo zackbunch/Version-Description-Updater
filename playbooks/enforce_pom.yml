@@ -57,12 +57,17 @@
         msg:
           total_entries: "{{ deps_desired | length }}"
           sample: "{{ (deps_desired | dict2items)[:5] }}"
+    
+    - name: Read POM once
+      ansible.builtin.slurp:
+        src: "{{ pom_file }}"
+      register: pom_raw
 
   roles:
     # - { role: pom_reader, tags: ['pom_reader'] }
-    - pom_project_updater
-    - pom_deps_updater
-    # - pom_plugin_updater
+    # - pom_project_updater
+    # - pom_deps_updater
+    - pom_plugin_updater
 
   post_tasks:
     - name: Final Summary
