@@ -37,7 +37,6 @@
       <version>3.4.1</version>
     </dependency>
   </dependencies>
-
   <build>
     <plugins>
       <plugin>
@@ -48,7 +47,6 @@
           <target>1.7</target>
         </configuration>
       </plugin>
-
       <!-- Example: Add surefire plugin for testing -->
       <plugin>
         <artifactId>maven-surefire-plugin</artifactId>
@@ -57,15 +55,14 @@
           <dependency>
             <groupId>org.apache.maven.surefire</groupId>
             <artifactId>surefire-junit47</artifactId>
-            <version>2.19.1</version>
+            <version>2.21.2</version>
           </dependency>
         </dependencies>
       </plugin>
-
       <!-- Example: Add jar plugin for packaging -->
       <plugin>
         <artifactId>maven-jar-plugin</artifactId>
-        <version>3.0.3</version>
+        <version>3.0.6</version>
         <configuration>
           <archive>
             <manifest>
