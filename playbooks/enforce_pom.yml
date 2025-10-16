@@ -64,9 +64,8 @@
       register: pom_raw
 
   roles:
-    # - { role: pom_reader, tags: ['pom_reader'] }
-    # - pom_project_updater
-    # - pom_deps_updater
+    - pom_project_updater
+    - pom_deps_updater
     - pom_plugin_updater
 
   post_tasks:
@@ -75,5 +74,6 @@
         msg:
           - "{{ project_update_summary | default('Project: No changes') }}"
           - "{{ deps_update_summary | default('Dependencies: No changes') }}"
-          - "{{ plugin_update_summary | default('Plugins: No changes') }}"
+          - "{{ plugins_update_summary | default('Plugins: No changes') }}"
+          - "{{ plugin_deps_update_summary | default('Plugin Dependencies: No changes') }}"
 

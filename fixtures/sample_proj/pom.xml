@@ -3,7 +3,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>kms-api-examples</groupId>
   <artifactId>kms-api-examples</artifactId>
-  <version>1.1.0-SNAPSHOT</version>
+  <version>1.2.0-SNAPSHOT</version>
   <dependencies>
     <dependency>
       <groupId>org.apache.httpcomponents</groupId>
@@ -29,7 +29,7 @@
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-core</artifactId>
-      <version>2.4.0</version>
+      <version>2.4.1</version>
     </dependency>
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
@@ -50,19 +50,19 @@
       <!-- Example: Add surefire plugin for testing -->
       <plugin>
         <artifactId>maven-surefire-plugin</artifactId>
-        <version>2.19.2</version>
+        <version>2.19.4</version>
         <dependencies>
           <dependency>
             <groupId>org.apache.maven.surefire</groupId>
             <artifactId>surefire-junit47</artifactId>
-            <version>2.21.3</version>
+            <version>2.21.5</version>
           </dependency>
         </dependencies>
       </plugin>
       <!-- Example: Add jar plugin for packaging -->
       <plugin>
         <artifactId>maven-jar-plugin</artifactId>
-        <version>3.0.6</version>
+        <version>3.0.9</version>
         <configuration>
           <archive>
             <manifest>
