@@ -1,7 +1,43 @@
 ---
-#
-# Purpose: Enforce project version from applications.json
-#
+- name: Read <groupId> from POM
+  community.general.xml:
+    path: "{{ pom_file }}"
+    xpath: "/m:project/m:groupId"
+    content: text
+    namespaces: "{{ pom_ns }}"
+  register: _gid
+
+- name: Read <artifactId> from POM
+  community.general.xml:
+    path: "{{ pom_file }}"
+    xpath: "/m:project/m:artifactId"
+    content: text
+    namespaces: "{{ pom_ns }}"
+  register: _aid
+
+- name: Read <version> from POM
+  community.general.xml:
+    path: "{{ pom_file }}"
+    xpath: "/m:project/m:version"
+    content: text
+    namespaces: "{{ pom_ns }}"
+  register: _ver
+
+- name: Build normalized project metadata fact
+  ansible.builtin.set_fact:
+    pom_project:
+      groupId:    "{{ _gid.matches | xml_first_trim }}"
+      artifactId: "{{ _aid.matches | xml_first_trim | lower }}"
+      version:    "{{ _ver.matches | xml_first_trim }}"
+
+- name: Debug normalized project metadata
+  ansible.builtin.debug:
+    msg:
+      groupId: "{{ pom_project.groupId }}"
+      artifactId: "{{ pom_project.artifactId }}"
+      version: "{{ pom_project.version }}"
+  when: ansible_verbosity > 0
+  
 - name: Compute desired project version (define even if missing)
   ansible.builtin.set_fact:
     new_version: "{{ (applications | default({})).get(pom_project.artifactId | default(''), '') }}"

@@ -1,2 +1,3 @@
 ---
 enforce_snapshot_suffix: false   # set true to auto-append -SNAPSHOT
+update_state: present
