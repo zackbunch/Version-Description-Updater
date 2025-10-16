@@ -1,6 +1,6 @@
 {
   "httpclient": "4.3.3",
-  "httpclient-cache": "4.3.2",
+  "httpclient-cache": "4.3.4",
   "httpmime": "4.3.2",
   "jackson-core": "2.4.0",
   "jackson-databind": "3.4.1",

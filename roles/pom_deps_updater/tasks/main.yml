@@ -34,6 +34,56 @@
       when: ansible_verbosity > 0
   when: deps_desired is not defined or deps_desired | length == 0
 
+- name: Read dependency artifactIds
+  community.general.xml:
+    path: "{{ pom_file }}"
+    xpath: "/m:project/m:dependencies/m:dependency/m:artifactId"
+    content: text
+    namespaces: "{{ pom_ns }}"
+  register: _dep_art
+
+- name: Read dependency groupIds
+  community.general.xml:
+    path: "{{ pom_file }}"
+    xpath: "/m:project/m:dependencies/m:dependency/m:groupId"
+    content: text
+    namespaces: "{{ pom_ns }}"
+  register: _dep_grp
+
+- name: Read dependency versions
+  community.general.xml:
+    path: "{{ pom_file }}"
+    xpath: "/m:project/m:dependencies/m:dependency/m:version"
+    content: text
+    namespaces: "{{ pom_ns }}"
+  register: _dep_ver
+
+
+- name: Normalize dependency matches to string lists
+  ansible.builtin.set_fact:
+    _dep_art_list: "{{ _dep_art.matches | xml_texts }}"
+    _dep_grp_list: "{{ _dep_grp.matches | xml_texts }}"
+    _dep_ver_list: "{{ _dep_ver.matches | xml_texts }}"
+
+- name: Assert dependency lists align
+  ansible.builtin.assert:
+    that:
+      - _dep_art_list | length == _dep_grp_list | length
+      - _dep_art_list | length == _dep_ver_list | length
+  when: _dep_art_list | length > 0
+
+- name: Build pom_deps_list [{groupId, artifactId, version}]
+  ansible.builtin.set_fact:
+    pom_deps_list: "{{ (pom_deps_list | default([])) + [ {
+      'groupId':    (_dep_grp_list[i] | default('') | trim),
+      'artifactId': (_dep_art_list[i] | default('') | trim),
+      'version':    (_dep_ver_list[i] | default('') | trim)
+    } ] }}"
+  loop: "{{ range(0, _dep_art_list | length) | list }}"
+  loop_control:
+    loop_var: i
+  when: _dep_art_list | length > 0
+
 - name: Ensure POM dependency facts are available
   ansible.builtin.assert:
     that:
