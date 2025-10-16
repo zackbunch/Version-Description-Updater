@@ -4,8 +4,6 @@
   connection: local
   gather_facts: false
 
-  vars_files:
-    - ../applications.json   # contains version map
 
   vars:
     pom_file: "{{ lookup('env', 'PWD') }}/fixtures/sample_proj/pom.xml"
@@ -25,10 +23,13 @@
         that: deps_raw is mapping
         fail_msg: "dependencies.json must be an object of artifactId -> version"
 
-    - name: Normalize dependency map (lowercase keys, trimmed values)
+    - name: Normalize dependency map (lowercase keys, trimmed string values)
+      vars:
+        _items: "{{ deps_raw | dict2items }}"
+        _keys:  "{{ _items | map(attribute='key')   | map('lower') | list }}"
+        _vals:  "{{ _items | map(attribute='value') | map('string') | map('trim') | list }}"
       ansible.builtin.set_fact:
-        deps_desired: "{{ (deps_desired | default({})) | combine({ (item.key | lower | trim): (item.value | string | trim) }) }}"
-      loop: "{{ deps_raw | dict2items }}"
+        deps_desired: "{{ dict(_keys | zip(_vals)) }}"
 
     - name: dependencies.json summary
       ansible.builtin.debug:
