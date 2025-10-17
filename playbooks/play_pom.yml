@@ -4,69 +4,78 @@
   connection: local
   gather_facts: false
 
-
   vars:
     pom_file: "{{ lookup('env', 'PWD') }}/fixtures/sample_proj/pom.xml"
     pom_ns: { m: "http://maven.apache.org/POM/4.0.0" }
     applications_json_path: "{{ playbook_dir }}/../applications.json"
     dependencies_json_path: "{{ playbook_dir }}/../dependencies.json"
+    apply_changes: true
 
   pre_tasks:
-    # -------------------------------------------------------------------
-    # Load and normalize applications.json
-    # -------------------------------------------------------------------
+    # --- Load + normalize applications.json ---
     - name: Load applications.json
       ansible.builtin.set_fact:
-        apps_raw: "{{ lookup('file', '../applications.json') | from_json }}"
+        apps_raw: "{{ lookup('file', applications_json_path) | from_json }}"
 
     - name: Validate applications.json structure
       ansible.builtin.assert:
         that: apps_raw is mapping
-        fail_msg: "applications.json must be an object of artifactId -> version"
+        fail_msg: "applications.json must be an object of artifactId (or groupId:artifactId) -> version"
 
-    - name: Normalize application map (lowercase keys, trimmed values)
+    - name: Normalize applications map
       ansible.builtin.set_fact:
-        applications: "{{ (applications | default({})) | combine({ (item.key | lower | trim): (item.value | trim) }) }}"
-      loop: "{{ apps_raw | dict2items }}"
+        applications: "{{ apps_raw | maven_normalize_desired }}"
 
     - name: applications.json summary
       ansible.builtin.debug:
         msg:
           total_entries: "{{ applications | length }}"
           sample: "{{ (applications | dict2items)[:5] }}"
+      when: ansible_verbosity|int > 0
 
-    # -------------------------------------------------------------------
-    # Load and normalize dependencies.json
-    # -------------------------------------------------------------------
+    # --- Load + normalize dependencies.json ---
     - name: Load dependencies.json
       ansible.builtin.set_fact:
-        deps_raw: "{{ lookup('file', '../dependencies.json') | from_json }}"
+        deps_raw: "{{ lookup('file', dependencies_json_path) | from_json }}"
 
     - name: Validate dependencies.json structure
       ansible.builtin.assert:
         that: deps_raw is mapping
-        fail_msg: "dependencies.json must be an object of artifactId -> version"
+        fail_msg: "dependencies.json must be an object of artifactId (or groupId:artifactId) -> version"
 
-    - name: Normalize dependency map (lowercase keys, trimmed values)
+    - name: Normalize dependency map
       ansible.builtin.set_fact:
-        deps_desired: "{{ (deps_desired | default({})) | combine({ (item.key | lower | trim): (item.value | string | trim) }) }}"
-      loop: "{{ deps_raw | dict2items }}"
+        deps_desired: "{{ deps_raw | maven_normalize_desired }}"
 
     - name: dependencies.json summary
       ansible.builtin.debug:
         msg:
           total_entries: "{{ deps_desired | length }}"
           sample: "{{ (deps_desired | dict2items)[:5] }}"
-    
-    - name: Read POM once
+      when: ansible_verbosity|int > 0
+
+    - name: Slurp pom.xml
       ansible.builtin.slurp:
         src: "{{ pom_file }}"
       register: pom_raw
 
+    - name: Decode POM text (for plugin extractors)
+      ansible.builtin.set_fact:
+        pom_text: "{{ pom_raw.content | b64decode }}"
+
+    # --- Filter sanity (verbose only) ---
+    - name: Sanity check custom filters are loaded
+      ansible.builtin.debug:
+        msg:
+          - "dep_rows ok => {{ ['a'] | maven_dep_rows(['g'], ['1.0']) | length }}"
+          - "enforce_plan ok => {{ [] | maven_enforce_plan({}, 'literal') | length }}"
+          - "plugins extractor ok => {{ (pom_text | maven_plugins) | length }}"
+      when: ansible_verbosity|int > 0
+
   roles:
-    - pom_project_updater
-    - pom_deps_updater
-    - pom_plugin_updater
+    - role: pom_project_updater
+    - role: pom_deps_updater
+    - role: pom_plugin_updater
 
   post_tasks:
     - name: Final Summary
@@ -76,4 +85,3 @@
           - "{{ deps_update_summary | default('Dependencies: No changes') }}"
           - "{{ plugins_update_summary | default('Plugins: No changes') }}"
           - "{{ plugin_deps_update_summary | default('Plugin Dependencies: No changes') }}"
-

@@ -6,6 +6,6 @@
   "jackson-databind": "3.5.1",
   "maven-compiler-plugin": "3.5.1",
   "maven-surefire-plugin": "2.19.5",
-  "maven-surefire-plugin::surefire-junit47": "2.21.3",
+  "maven-surefire-plugin::surefire-junit47": "2.21.4",
   "maven-jar-plugin": "3.0.9"
 }
