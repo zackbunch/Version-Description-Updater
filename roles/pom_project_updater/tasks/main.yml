@@ -1,13 +1,22 @@
 ---
-- name: Read <groupId> from POM
+# Role: pom_project_updater
+# Purpose: Update <project><version>, handling ${prop} and parent inheritance.
+# Inputs:
+#   - pom_file
+#   - pom_ns (e.g. { m: "http://maven.apache.org/POM/4.0.0" })
+#   - applications (map) keyed by "groupId:artifactId" or "artifactId"
+#   - enforce_create_child_version (bool, default=false)  # only when inherited
+
+# ---------- Read project metadata ----------
+- name: Read <groupId> (prefer project, fallback parent)
   community.general.xml:
     path: "{{ pom_file }}"
-    xpath: "/m:project/m:groupId"
+    xpath: "/m:project/m:groupId | /m:project/m:parent/m:groupId"
     content: text
     namespaces: "{{ pom_ns }}"
   register: _gid
 
-- name: Read <artifactId> from POM
+- name: Read <artifactId>
   community.general.xml:
     path: "{{ pom_file }}"
     xpath: "/m:project/m:artifactId"
@@ -15,76 +24,128 @@
     namespaces: "{{ pom_ns }}"
   register: _aid
 
-- name: Read <version> from POM
+- name: Read <version> (prefer project, fallback parent)
+  community.general.xml:
+    path: "{{ pom_file }}"
+    xpath: "/m:project/m:version | /m:project/m:parent/m:version"
+    content: text
+    namespaces: "{{ pom_ns }}"
+  register: _ver_any
+
+- name: Check if project defines its own <version>
   community.general.xml:
     path: "{{ pom_file }}"
     xpath: "/m:project/m:version"
     content: text
     namespaces: "{{ pom_ns }}"
-  register: _ver
+  register: _ver_direct
 
-- name: Build normalized project metadata fact
+# ---------- Normalize metadata (via filter) ----------
+- name: Build normalized project metadata
   ansible.builtin.set_fact:
-    pom_project:
-      groupId:    "{{ _gid.matches | xml_first_trim }}"
-      artifactId: "{{ _aid.matches | xml_first_trim | lower }}"
-      version:    "{{ _ver.matches | xml_first_trim }}"
+    pom_project: "{{ _gid.matches | maven_project_meta(_aid.matches, _ver_any.matches, _ver_direct.matches) }}"
 
-- name: Debug normalized project metadata
-  ansible.builtin.debug:
-    msg:
-      groupId: "{{ pom_project.groupId }}"
-      artifactId: "{{ pom_project.artifactId }}"
-      version: "{{ pom_project.version }}"
-  when: ansible_verbosity > 0
-  
-- name: Compute desired project version (define even if missing)
+# ---------- Resolve desired version (qualified → artifact fallback) ----------
+- name: Compute desired version
   ansible.builtin.set_fact:
-    new_version: "{{ (applications | default({})).get(pom_project.artifactId | default(''), '') }}"
+    desired_version: "{{ (applications | default({})) | maven_desired_version(pom_project.groupId, pom_project.artifactId) }}"
 
-- name: Planned project version change
+- name: Debug plan
   ansible.builtin.debug:
     msg:
       project: "{{ pom_project.groupId }}:{{ pom_project.artifactId }}"
-      current: "{{ pom_project.version | default('') }}"
-      desired: "{{ new_version | default('') }}"
-  when: ansible_verbosity > 0
+      current: "{{ pom_project.version }}"
+      desired: "{{ desired_version }}"
+      has_direct_version: "{{ pom_project.has_direct_version }}"
+  when: ansible_verbosity | int > 0
 
-- name: Update project version if different
+# ---------- Property-aware updates ----------
+- name: Detect update mode (property-backed vs literal)
+  ansible.builtin.set_fact:
+    update_mode: "{{ pom_project.version | maven_update_mode }}"
+
+# Ensure <properties> exists if we need to write a property value
+- name: Ensure <properties> exists (when updating a property)
+  community.general.xml:
+    path: "{{ pom_file }}"
+    xpath: "/m:project/m:properties"
+    namespaces: "{{ pom_ns }}"
+    state: present
+  when:
+    - desired_version | length > 0
+    - update_mode.is_prop_ref
+    - update_mode.prop_name | length > 0
+
+- name: Update <properties>/<prop_name> when version is ${prop}
+  community.general.xml:
+    path: "{{ pom_file }}"
+    xpath: "/m:project/m:properties/*[local-name()='{{ update_mode.prop_name }}']"
+    namespaces: "{{ pom_ns }}"
+    value: "{{ desired_version }}"
+    state: present
+  when:
+    - desired_version | length > 0
+    - update_mode.is_prop_ref
+    - update_mode.prop_name | length > 0
+  register: _prop_update
+
+# ---------- Direct/inherited <version> updates ----------
+- name: Update <project>/<version> when not property-backed and version exists
   community.general.xml:
     path: "{{ pom_file }}"
     xpath: "/m:project/m:version"
     namespaces: "{{ pom_ns }}"
-    value: "{{ new_version }}"
-    state: "{{ update_state }}"
-  register: _update_result
+    value: "{{ desired_version }}"
+    state: present
   when:
-    - (new_version | default('')) | length > 0
-    - (pom_project.version | default('')) != (new_version | default(''))
+    - desired_version | length > 0
+    - not update_mode.is_prop_ref
+    - pom_project.has_direct_version
+  register: _direct_update
 
-- name: Re-read project version
+- name: Optionally create child <version> if currently inherited
   community.general.xml:
     path: "{{ pom_file }}"
     xpath: "/m:project/m:version"
+    namespaces: "{{ pom_ns }}"
+    value: "{{ desired_version }}"
+    state: present
+  when:
+    - desired_version | length > 0
+    - not update_mode.is_prop_ref
+    - not pom_project.has_direct_version
+    - (enforce_create_child_version | default(false) | bool)
+  register: _create_child
+
+# ---------- Verify (for upstream reporting if needed) ----------
+- name: Re-read final <version> (project or parent path)
+  community.general.xml:
+    path: "{{ pom_file }}"
+    xpath: "/m:project/m:version | /m:project/m:parent/m:version"
     content: text
     namespaces: "{{ pom_ns }}"
-  register: _verify_proj_ver
+  register: _ver_final
 
-- name: Extract final version for comparison
+- name: Compute final version string
   ansible.builtin.set_fact:
-    _final_version: "{{ (_verify_proj_ver.matches | map('dict2items') | flatten | map(attribute='value') | first | default('')) | trim }}"
+    final_version: "{{ _ver_final.matches | xml_first_text }}"
 
-- name: Set project version enforcement summary
+# ---------- Set summary fact for post_tasks ----------
+- name: Set project update summary
   ansible.builtin.set_fact:
     project_update_summary: >-
       {{
-        ((new_version | default('')) | length == 0)
+        (desired_version | length == 0)
           | ternary(
-              '⚫ No desired version found in applications.json for ' ~ pom_project.artifactId,
-              ((pom_project.version | default('')) != _final_version)
-                | ternary(
-                    '✅ Updated project version from ' ~ (pom_project.version | default('')) ~ ' to ' ~ _final_version,
-                    '⚪ Project version already up to date (' ~ _final_version ~ ')'
-                  )
+              '⚫ No desired version found for ' ~ (pom_project.groupId ~ ':' ~ pom_project.artifactId),
+              (
+                (update_mode.is_prop_ref and (_prop_update is defined and _prop_update.changed))
+                or (_direct_update is defined and _direct_update.changed)
+                or (_create_child is defined and _create_child.changed)
+              )
+              | ternary(
+                  '✅ Project version updated to ' ~ (final_version | default(desired_version, true)),
+                  '⚪ Project version already up to date (' ~ (final_version | default(pom_project.version, true)) ~ ')'
+                )
             )
       }}
