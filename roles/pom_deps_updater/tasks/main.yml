@@ -1,39 +1,31 @@
 ---
-#
 # Purpose: Enforce dependency versions from dependencies.json
-#
+
+# ---------- Load + normalize desired ----------
 - block:
     - name: Load dependencies.json
       ansible.builtin.set_fact:
         deps_raw: "{{ lookup('file', dependencies_json_path) | from_json }}"
 
-    - name: Validate and normalize dependencies.json
+    - name: Validate dependencies.json shape
       ansible.builtin.assert:
         that:
           - deps_raw is mapping
-        fail_msg: "Expected a JSON object of artifactId → version pairs, got: {{ deps_raw | type_debug }}"
+        fail_msg: "Expected a JSON object of artifactId or groupId:artifactId → version pairs, got: {{ deps_raw | type_debug }}"
 
-    - name: Normalize to deps_desired (lowercase keys, trimmed values)
+    - name: Normalize desired map
       ansible.builtin.set_fact:
-        deps_desired: >-
-          {{
-            (deps_raw | dict2items)
-            | map('combine', {'key': item.key | lower | trim, 'value': item.value | string | trim})
-            | list | items2dict
-          }}
-
-    - name: Remove entries missing versions
-      ansible.builtin.set_fact:
-        deps_desired: "{{ deps_desired | dict2items | rejectattr('value', 'equalto', '') | items2dict }}"
+        deps_desired: "{{ deps_raw | maven_normalize_desired }}"
 
     - name: dependencies.json summary
       ansible.builtin.debug:
         msg:
           total_entries: "{{ deps_desired | length }}"
           sample: "{{ (deps_desired | dict2items)[:5] }}"
-      when: ansible_verbosity > 0
+      when: ansible_verbosity | int > 0
   when: deps_desired is not defined or deps_desired | length == 0
 
+# ---------- Read POM dependencies ----------
 - name: Read dependency artifactIds
   community.general.xml:
     path: "{{ pom_file }}"
@@ -58,67 +50,47 @@
     namespaces: "{{ pom_ns }}"
   register: _dep_ver
 
+# ---------- Filter sanity probe (optional, verbose only) ----------
+- name: Sanity check custom filters are loaded
+  ansible.builtin.debug:
+    msg:
+      - "dep_rows loaded? => {{ ['a'] | maven_dep_rows(['g'], ['1.0']) | length }}"
+      - "enforce_plan loaded? => {{ [] | maven_enforce_plan({}, 'literal') | length }}"
+  when: ansible_verbosity | int > 0
 
-- name: Normalize dependency matches to string lists
+# ---------- Build rows + compute plan (filters do the heavy lifting) ----------
+- name: Build [{groupId, artifactId, version}] rows
   ansible.builtin.set_fact:
-    _dep_art_list: "{{ _dep_art.matches | xml_texts }}"
-    _dep_grp_list: "{{ _dep_grp.matches | xml_texts }}"
-    _dep_ver_list: "{{ _dep_ver.matches | xml_texts }}"
+    pom_deps_list: "{{ _dep_art.matches | maven_dep_rows(_dep_grp.matches, _dep_ver.matches) }}"
 
-- name: Assert dependency lists align
-  ansible.builtin.assert:
-    that:
-      - _dep_art_list | length == _dep_grp_list | length
-      - _dep_art_list | length == _dep_ver_list | length
-  when: _dep_art_list | length > 0
-
-- name: Build pom_deps_list [{groupId, artifactId, version}]
+- name: Compute dependency update plan (literal-only)
   ansible.builtin.set_fact:
-    pom_deps_list: "{{ (pom_deps_list | default([])) + [ {
-      'groupId':    (_dep_grp_list[i] | default('') | trim),
-      'artifactId': (_dep_art_list[i] | default('') | trim),
-      'version':    (_dep_ver_list[i] | default('') | trim)
-    } ] }}"
-  loop: "{{ range(0, _dep_art_list | length) | list }}"
-  loop_control:
-    loop_var: i
-  when: _dep_art_list | length > 0
-
-- name: Ensure POM dependency facts are available
-  ansible.builtin.assert:
-    that:
-      - pom_deps_list is defined
-      - pom_deps_list | length > 0
-    fail_msg: "pom_deps_list missing or empty. Ensure pom_reader ran before pom_deps_updater."
-
-- name: Initialize deps_plan
-  ansible.builtin.set_fact:
-    deps_plan: []
-
-- name: Build deps_plan (literal-only)
-  ansible.builtin.set_fact:
-    deps_plan: "{{ deps_plan + [ {
-      'groupId':    item.groupId | default(''),
-      'artifactId': item.artifactId,
-      'current':    item.version | default(''),
-      'desired':    deps_desired[item.artifactId | lower]
-    } ] }}"
-  loop: "{{ pom_deps_list }}"
-  when:
-    - deps_desired.get(item.artifactId | lower, '') != ''
-    - not (item.version | default('') | regex_search('^\$\{.*\}$'))
-    - item.version | default('') != deps_desired[item.artifactId | lower]
-  loop_control:
-    label: "{{ item.artifactId }} ({{ item.version | default('?') }})"
+    deps_plan: "{{ pom_deps_list | maven_enforce_plan(deps_desired, 'literal') }}"
 
 - name: Dependency update plan summary
   ansible.builtin.debug:
     msg:
       planned_changes: "{{ deps_plan | length }}"
       sample: "{{ (deps_plan | default([]))[:5] }}"
-  when: ansible_verbosity > 0
+  when: ansible_verbosity | int > 0
 
-- name: Apply dependency version updates
+# ---------- Apply updates (group-qualified first, then artifact-only fallback) ----------
+- name: Apply version updates (match on groupId + artifactId)
+  community.general.xml:
+    path: "{{ pom_file }}"
+    xpath: "/m:project/m:dependencies/m:dependency[m:groupId='{{ item.groupId }}' and m:artifactId='{{ item.artifactId }}']/m:version"
+    namespaces: "{{ pom_ns }}"
+    value: "{{ item.desired }}"
+    state: present
+  loop: "{{ deps_plan }}"
+  loop_control:
+    label: "{{ item.groupId }}:{{ item.artifactId }} → {{ item.current }} → {{ item.desired }}"
+  register: _dep_update_result_grouped
+  when:
+    - deps_plan | length > 0
+    - (item.groupId | default('') | trim | length) > 0
+
+- name: Apply version updates (artifactId-only fallback)
   community.general.xml:
     path: "{{ pom_file }}"
     xpath: "/m:project/m:dependencies/m:dependency[m:artifactId='{{ item.artifactId }}']/m:version"
@@ -128,9 +100,12 @@
   loop: "{{ deps_plan }}"
   loop_control:
     label: "{{ item.artifactId }} → {{ item.current }} → {{ item.desired }}"
-  register: _dep_update_result
-  changed_when: deps_plan | length > 0
+  register: _dep_update_result_artonly
+  when:
+    - deps_plan | length > 0
+    - (item.groupId | default('') | trim | length) == 0
 
+# ---------- Human summary for post_tasks ----------
 - name: Set dependency enforcement summary
   ansible.builtin.set_fact:
     deps_update_summary: >-

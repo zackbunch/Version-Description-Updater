@@ -3,48 +3,52 @@
 - name: Extract plugins
   ansible.builtin.set_fact:
     plugins: "{{ pom_raw.content | b64decode | maven_plugins }}"
-
-- name: Extract plugin dependencies
-  ansible.builtin.set_fact:
     plugin_deps: "{{ pom_raw.content | b64decode | maven_plugin_deps }}"
 
 # ---------- Plugin plan ----------
-- name: Build current plugin map {artifactId -> version}
+- name: Build plugin map {artifactId_lc -> version}
   ansible.builtin.set_fact:
-    plugins_map: >-
+    plugins_map_lc: >-
       {{
         dict(
-          (plugins | map(attribute='artifactId') | list)
+          (plugins | map(attribute='artifactId') | map('lower') | list)
           | zip(plugins | map(attribute='version') | list)
         )
       }}
 
 - name: Compute plugin update plan
   vars:
-    desired: "{{ deps_desired.get(item | lower) | default('') }}"
-    current: "{{ plugins_map.get(item) | default('') }}"
+    aid_lc: "{{ item | lower | trim }}"
+    current: "{{ plugins_map_lc.get(aid_lc, '') | string | trim }}"
+    desired: "{{ deps_desired.get(aid_lc, '') | string | trim }}"
   ansible.builtin.set_fact:
     plugin_update_plan: >-
       {{
         (plugin_update_plan | default([]))
         + ([{
               'artifactId': item,
+              'artifactId_lc': aid_lc,
               'current': current,
               'desired': desired
-            }] if (desired | length > 0 and current | length > 0 and desired != current) else [])
+            }] if (desired and current and desired != current) else [])
       }}
   loop: "{{ plugins | map(attribute='artifactId') | list }}"
   loop_control:
     label: "{{ item }}"
 
-# ---------- Plugin-dep plan ----------
-- name: Build plugin-dep map {plugin::dep -> version}
+# ---------- Plugin-dependency plan ----------
+- name: Build plugin-dep map {(plugin::dep)_lc -> version}
   ansible.builtin.set_fact:
-    plugin_deps_map: >-
+    plugin_deps_map_lc: >-
       {{
         dict(
-          (plugin_deps | map(attribute='plugin') | list | zip(plugin_deps | map(attribute='artifactId') | list))
+          (
+            (plugin_deps | map(attribute='plugin') | list)
+            | zip(plugin_deps | map(attribute='artifactId') | list)
+          )
           | map('join', '::')
+          | map('lower')
+          | map('trim')
           | list
           | zip(plugin_deps | map(attribute='version') | list)
         )
@@ -52,10 +56,10 @@
 
 - name: Compute plugin-dep update plan
   vars:
-    pair: "{{ item.plugin ~ '::' ~ item.artifactId }}"
-    key: "{{ pair | lower }}"
-    current: "{{ plugin_deps_map.get(pair) | default('') }}"
-    desired: "{{ deps_desired.get(key) | default('') }}"
+    pair_raw: "{{ item.plugin ~ '::' ~ item.artifactId }}"
+    pair_lc: "{{ pair_raw | lower | trim }}"
+    current: "{{ plugin_deps_map_lc.get(pair_lc, '') | string | trim }}"
+    desired: "{{ deps_desired.get(pair_lc, '') | string | trim }}"
   ansible.builtin.set_fact:
     plugin_dep_update_plan: >-
       {{
@@ -63,16 +67,17 @@
         + ([{
               'plugin': item.plugin,
               'artifactId': item.artifactId,
-              'pair': pair,
+              'pair': pair_raw,
+              'pair_lc': pair_lc,
               'current': current,
               'desired': desired
-            }] if (desired | length > 0 and current | length > 0 and desired != current) else [])
+            }] if (desired and current and desired != current) else [])
       }}
   loop: "{{ plugin_deps }}"
   loop_control:
     label: "{{ item.plugin }}::{{ item.artifactId }}"
 
-# ---------- Apply (gated by apply_changes=true) ----------
+# ---------- Apply (only if apply_changes=true) ----------
 - name: Backup POM before mutation
   when: (apply_changes | default(false)) | bool and (
           (plugin_update_plan | default([])) | length > 0 or
@@ -84,101 +89,55 @@
     remote_src: true
     mode: preserve
 
-# Plugins
-- name: Ensure plugin <version> exists
-  when: (apply_changes | default(false)) | bool and (plugin_update_plan | default([])) | length > 0
+- name: Set plugin <version> (idempotent)
+  when: (apply_changes | default(false)) | bool and (plugin_update_plan | length > 0)
   community.general.xml:
     path: "{{ pom_file }}"
-    xpath: >-
-      /*[local-name()='project']
-      /*[local-name()='build']
-      /*[local-name()='plugins']
-      /*[local-name()='plugin'][*[local-name()='artifactId']='{{ item.artifactId }}']
-      /*[local-name()='version']
+    xpath: "/m:project/m:build/m:plugins/m:plugin[m:artifactId='{{ item.artifactId }}']/m:version"
+    namespaces: "{{ pom_ns }}"
+    value: "{{ item.desired }}"
     state: present
   loop: "{{ plugin_update_plan }}"
   loop_control:
-    label: "{{ item.artifactId }} ensure <version>"
+    label: "{{ item.artifactId }} {{ item.current }} → {{ item.desired }}"
 
-- name: Set plugin <version>
-  when: (apply_changes | default(false)) | bool and (plugin_update_plan | default([])) | length > 0
+- name: Set plugin-dep <version> (idempotent)
+  when: (apply_changes | default(false)) | bool and (plugin_dep_update_plan | length > 0)
   community.general.xml:
     path: "{{ pom_file }}"
-    xpath: >-
-      /*[local-name()='project']
-      /*[local-name()='build']
-      /*[local-name()='plugins']
-      /*[local-name()='plugin'][*[local-name()='artifactId']='{{ item.artifactId }}']
-      /*[local-name()='version']
+    xpath: "/m:project/m:build/m:plugins/m:plugin[m:artifactId='{{ item.plugin }}']/m:dependencies/m:dependency[m:artifactId='{{ item.artifactId }}']/m:version"
+    namespaces: "{{ pom_ns }}"
     value: "{{ item.desired }}"
-    state: present
-    pretty_print: true
-  loop: "{{ plugin_update_plan }}"
-  loop_control:
-    label: "{{ item.artifactId }} {{ item.current }} -> {{ item.desired }}"
-
-# Plugin dependencies
-- name: Ensure plugin-dep <version> exists
-  when: (apply_changes | default(false)) | bool and (plugin_dep_update_plan | default([])) | length > 0
-  community.general.xml:
-    path: "{{ pom_file }}"
-    xpath: >-
-      /*[local-name()='project']
-      /*[local-name()='build']
-      /*[local-name()='plugins']
-      /*[local-name()='plugin'][*[local-name()='artifactId']='{{ item.plugin }}']
-      /*[local-name()='dependencies']
-      /*[local-name()='dependency'][*[local-name()='artifactId']='{{ item.artifactId }}']
-      /*[local-name()='version']
     state: present
   loop: "{{ plugin_dep_update_plan }}"
   loop_control:
-    label: "{{ item.pair }} ensure <version>"
+    label: "{{ item.pair }} {{ item.current }} → {{ item.desired }}"
 
-- name: Set plugin-dep <version>
-  when: (apply_changes | default(false)) | bool and (plugin_dep_update_plan | default([])) | length > 0
-  community.general.xml:
-    path: "{{ pom_file }}"
-    xpath: >-
-      /*[local-name()='project']
-      /*[local-name()='build']
-      /*[local-name()='plugins']
-      /*[local-name()='plugin'][*[local-name()='artifactId']='{{ item.plugin }}']
-      /*[local-name()='dependencies']
-      /*[local-name()='dependency'][*[local-name()='artifactId']='{{ item.artifactId }}']
-      /*[local-name()='version']
-    value: "{{ item.desired }}"
-    state: present
-    pretty_print: true
-  loop: "{{ plugin_dep_update_plan }}"
-  loop_control:
-    label: "{{ item.pair }} {{ item.current }} -> {{ item.desired }}"
-
-# ---------- (Optional) Post-apply verify ----------
+# ---------- Optional verification ----------
 - name: Re-slurp pom.xml (post-apply)
   when: (apply_changes | default(false)) | bool and (
-          (plugin_update_plan | default([])) | length > 0 or
-          (plugin_dep_update_plan | default([])) | length > 0
+          (plugin_update_plan | length > 0) or
+          (plugin_dep_update_plan | length > 0)
         )
   ansible.builtin.slurp:
     src: "{{ pom_file }}"
   register: pom_raw_after
 
-- name: Re-extract after apply (post-apply)
-  when: (apply_changes | default(false)) | bool and (
-          (plugin_update_plan | default([])) | length > 0 or
-          (plugin_dep_update_plan | default([])) | length > 0
-        )
+- name: Re-extract plugin data (post-apply)
+  when:
+    - pom_raw_after is defined
+    - pom_raw_after is mapping
+    - "'content' in pom_raw_after"
   ansible.builtin.set_fact:
-    plugins_after: "{{ pom_raw_after.content | b64decode | maven_plugins }}"
-    plugin_deps_after: "{{ pom_raw_after.content | b64decode | maven_plugin_deps }}"
+    plugins_after: "{{ pom_raw_after['content'] | b64decode | maven_plugins }}"
+    plugin_deps_after: "{{ pom_raw_after['content'] | b64decode | maven_plugin_deps }}"
 
-# ---------- Summaries (compact) ----------
-- name: Set plugin compact summary
+# ---------- Summaries ----------
+- name: Set plugin summary
   ansible.builtin.set_fact:
     plugins_update_summary: >-
       {{
-        (plugin_update_plan | default([]) | length > 0)
+        (plugin_update_plan | length > 0)
         | ternary(
             '✅ Updated ' ~ (plugin_update_plan | length) ~ ' plugin version(s): ' ~
             (plugin_update_plan | map(attribute='artifactId') | list | join(', ')),
@@ -186,20 +145,14 @@
           )
       }}
 
-- name: Set plugin-dep compact summary
+- name: Set plugin-dep summary
   ansible.builtin.set_fact:
     plugin_deps_update_summary: >-
       {{
-        (plugin_dep_update_plan | default([]) | length > 0)
+        (plugin_dep_update_plan | length > 0)
         | ternary(
             '✅ Updated ' ~ (plugin_dep_update_plan | length) ~ ' plugin dependency version(s): ' ~
             (plugin_dep_update_plan | map(attribute='pair') | list | join(', ')),
             '⚪ No plugin dependency updates required.'
           )
       }}
-
-- name: Show compact summaries
-  ansible.builtin.debug:
-    msg:
-      plugins: "{{ plugins_update_summary }}"
-      plugin_deps: "{{ plugin_deps_update_summary }}"
